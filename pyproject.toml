@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sturdy-couscous"
+version = "0.1.0"
+description = "Motor de Análisis Topográfico y Navegación Autónoma con Intel RealSense D415 (NASA Space Apps 2026)"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

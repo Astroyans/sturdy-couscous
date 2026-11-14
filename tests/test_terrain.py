@@ -1,0 +1,41 @@
+"""Pruebas unitarias para Task 3 (Fase 2): deproyección 3D, plano RANSAC e inclinación."""
+
+import numpy as np
+
+from src.camera.synthetic import SyntheticTerrainCamera
+from src.config import PipelineConfig
+from src.preprocessing.filters import preprocess_depth
+from src.terrain.ground_plane import GroundPlaneAnalyzer
+
+
+def test_ground_plane_ransac_recovers_incline_and_altitude():
+    cfg = PipelineConfig(width=320, height=240)
+    target_incline_deg = 7.5
+    cam = SyntheticTerrainCamera(cfg, terrain_incline_deg=target_incline_deg, add_noise=False)
+    frame = cam.read_frame()
+
+    filtered_depth, valid_mask = preprocess_depth(frame.depth_m, cfg)
+    analyzer = GroundPlaneAnalyzer(cfg)
+    terrain = analyzer.analyze(filtered_depth, valid_mask, frame.intrinsics)
+
+    # La pendiente estimada debe estar muy cerca de los 7.5° reales del plano sintético
+    assert abs(terrain.pitch_deg - target_incline_deg) < 1.5
+    assert abs(terrain.max_incline_deg - target_incline_deg) < 2.0
+    assert terrain.altitude_m > 0.20
+
+    # El mapa de alturas relativas debe mostrar tanto el BOULDER (> +0.08m) como el CREVICE (< -0.08m)
+    assert float(np.max(terrain.height_map_m)) > 0.08
+    assert float(np.min(terrain.height_map_m)) < -0.08
+
+
+def test_plane_lock_and_unlock():
+    cfg = PipelineConfig(width=160, height=120)
+    analyzer = GroundPlaneAnalyzer(cfg)
+    assert not analyzer.is_plane_locked
+
+    normal = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    analyzer.lock_plane(normal, 0.50)
+    assert analyzer.is_plane_locked
+
+    analyzer.unlock_plane()
+    assert not analyzer.is_plane_locked
