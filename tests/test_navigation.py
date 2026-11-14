@@ -1,5 +1,3 @@
-"""Pruebas unitarias para Task 5 (Fase 4): Malla de Ocupación 2D y rutas A* / Dijkstra."""
-
 import numpy as np
 
 from src.camera.synthetic import SyntheticTerrainCamera
@@ -38,12 +36,10 @@ def test_occupancy_grid_and_astar_vs_dijkstra_avoid_obstacles():
     assert len(res_astar.path_cells) > 10
     assert len(res_dijkstra.path_cells) > 10
 
-    # Ninguna celda de la ruta óptima puede pisar un BOULDER o CREVICE
     for r, c in res_astar.path_cells:
         assert grid[r, c] not in (GRID_BOULDER, GRID_CREVICE)
 
     for r, c in res_dijkstra.path_cells:
         assert grid[r, c] not in (GRID_BOULDER, GRID_CREVICE)
 
-    # A* debe explorar igual o menos nodos que Dijkstra para llegar a la misma meta
     assert res_astar.explored_nodes <= res_dijkstra.explored_nodes

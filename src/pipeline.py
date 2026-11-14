@@ -1,5 +1,3 @@
-"""Orquestador central del pipeline de análisis topográfico y navegación (Fases 1 a 5)."""
-
 from __future__ import annotations
 
 import time
@@ -17,8 +15,6 @@ from src.terrain.ground_plane import GroundPlaneAnalyzer
 
 
 class TerrainNavigationPipeline:
-    """Integra preprocesamiento, plano RANSAC, obstáculos DBSCAN y navegación A*/Dijkstra."""
-
     def __init__(self, config: Optional[PipelineConfig] = None) -> None:
         self.config = config or PipelineConfig()
         self.ground_analyzer = GroundPlaneAnalyzer(self.config)
@@ -30,14 +26,12 @@ class TerrainNavigationPipeline:
         self._last_terrain: Optional[TerrainAnalysis] = None
 
     def toggle_planner(self) -> str:
-        """Alterna en vivo entre los algoritmos `'astar'` y `'dijkstra'`."""
         self.planner_algorithm = (
             "dijkstra" if self.planner_algorithm == "astar" else "astar"
         )
         return self.planner_algorithm
 
     def toggle_plane_lock(self) -> bool:
-        """Fija o libera el plano de referencia del suelo/mesa usando la última medición."""
         if self.ground_analyzer.is_plane_locked:
             self.ground_analyzer.unlock_plane()
             return False
@@ -53,13 +47,10 @@ class TerrainNavigationPipeline:
         self,
         frame: FrameBundle,
     ) -> tuple[PipelineOutput, np.ndarray, np.ndarray]:
-        """Ejecuta las Fases 1 a 4 sobre un `FrameBundle` y mide los FPS de procesamiento."""
         t0 = time.perf_counter()
 
-        # Fase 1: Preprocesamiento Gaussiano + Morfológico
         filtered_depth_m, valid_mask = preprocess_depth(frame.depth_m, self.config)
 
-        # Fase 2: Deproyección 3D, plano del suelo (RANSAC) e inclinación
         terrain = self.ground_analyzer.analyze(
             filtered_depth_m,
             valid_mask,
@@ -68,10 +59,8 @@ class TerrainNavigationPipeline:
         )
         self._last_terrain = terrain
 
-        # Fase 3: Segmentación de obstáculos BOULDER y CREVICE (Morfología + DBSCAN)
         obstacles, boulder_mask, crevice_mask = self.obstacle_detector.detect(terrain)
 
-        # Fase 4: Malla de ocupación 2D y planificación de ruta (A* / Dijkstra)
         occupancy_grid, cost_grid, safe_corridor = self.grid_builder.build(
             terrain, obstacles, boulder_mask, crevice_mask
         )

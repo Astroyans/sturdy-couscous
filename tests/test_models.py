@@ -1,5 +1,3 @@
-"""Pruebas unitarias para Task 1: configuración y contrato JSON `drone_cv`."""
-
 import numpy as np
 
 from src.config import PipelineConfig

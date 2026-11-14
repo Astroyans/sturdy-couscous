@@ -1,5 +1,3 @@
-"""Pruebas unitarias para Task 4 (Fase 3): detección de `BOULDER` y `CREVICE` con DBSCAN."""
-
 from src.camera.synthetic import SyntheticTerrainCamera
 from src.config import PipelineConfig
 from src.obstacles.detector import ObstacleDetector
@@ -26,14 +24,12 @@ def test_obstacle_detector_identifies_boulder_and_crevice():
     boulders = [o for o in obstacles if o.type == "BOULDER"]
     crevices = [o for o in obstacles if o.type == "CREVICE"]
 
-    # El boulder sintético está a la izquierda (bearing < 0) y a ~1.28 m
     b = boulders[0]
     assert b.bearing_deg < -5.0
     assert 0.9 < b.distance_m < 1.7
     assert 0.08 < b.magnitude_m < 0.22
     assert "height_m" in b.to_contract_dict()
 
-    # El crevice sintético está a la derecha (bearing > 0) y a ~1.48 m
     c = crevices[0]
     assert c.bearing_deg > 5.0
     assert 1.0 < c.distance_m < 1.9

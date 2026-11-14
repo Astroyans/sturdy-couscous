@@ -1,5 +1,3 @@
-"""Pruebas unitarias para Task 2: cámara sintética, preprocesamiento y detección D415."""
-
 import numpy as np
 
 from src.camera.realsense_d415 import RealSenseD415Camera
@@ -24,7 +22,6 @@ def test_synthetic_camera_generates_valid_rgbd_bundle():
 def test_preprocess_depth_fills_small_holes_and_reduces_noise():
     cfg = PipelineConfig(width=160, height=120)
     raw = np.full((120, 160), 1.50, dtype=np.float32)
-    # Inyectar un pequeño hueco inválido (0.0) en el centro
     raw[60, 80] = 0.0
     raw[60, 81] = 0.0
 
@@ -35,9 +32,7 @@ def test_preprocess_depth_fills_small_holes_and_reduces_noise():
 
 def test_clean_binary_mask_removes_isolated_speckles():
     noisy = np.zeros((100, 100), dtype=bool)
-    # Objeto real grande
     noisy[30:60, 30:60] = True
-    # Píxel aislado de ruido
     noisy[10, 10] = True
 
     cleaned = clean_binary_mask(noisy, kernel_size=5, open_iterations=1, close_iterations=1)

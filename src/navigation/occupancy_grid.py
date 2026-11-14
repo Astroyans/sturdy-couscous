@@ -1,5 +1,3 @@
-"""Construcción de Malla de Ocupación 2D (*Bird's-Eye View*) e inflación de seguridad."""
-
 from __future__ import annotations
 
 import math
@@ -22,8 +20,6 @@ from src.models import (
 
 
 class OccupancyGridBuilder:
-    """Ejecuta la proyección cenital 2D (Occupancy Grid) y el mapa de costos de navegación."""
-
     def __init__(self, config: Optional[PipelineConfig] = None) -> None:
         self.config = config or PipelineConfig()
 
@@ -34,7 +30,6 @@ class OccupancyGridBuilder:
         return rows, cols
 
     def world_to_cell(self, x_m: float, y_m: float) -> tuple[int, int]:
-        """Convierte coordenadas métricas (X_right, Y_forward) a índices (row, col)."""
         rows, cols = self.grid_shape
         res = self.config.grid_resolution_m
         half_w = self.config.grid_width_m / 2.0
@@ -44,7 +39,6 @@ class OccupancyGridBuilder:
         return row, col
 
     def cell_to_world(self, row: int, col: int) -> tuple[float, float]:
-        """Convierte índices de celda (row, col) a coordenadas métricas (X_right, Y_forward)."""
         res = self.config.grid_resolution_m
         half_w = self.config.grid_width_m / 2.0
         x_m = (col + 0.5) * res - half_w
@@ -58,14 +52,12 @@ class OccupancyGridBuilder:
         boulder_mask: np.ndarray,
         crevice_mask: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, bool]:
-        """Genera la malla de ocupación 2D, la matriz de costos y el booleano `safe_corridor`."""
         rows, cols = self.grid_shape
         res = self.config.grid_resolution_m
         half_w = self.config.grid_width_m / 2.0
 
         grid = np.full((rows, cols), GRID_UNKNOWN, dtype=np.uint8)
 
-        # Submuestreo rápido para proyección cenital
         s = max(1, int(self.config.pointcloud_stride))
         pts = terrain.points_3d[::s, ::s]
         valid = terrain.valid_mask[::s, ::s]
@@ -86,10 +78,8 @@ class OccupancyGridBuilder:
         r_idx = np.clip((Y[in_bounds] / res).astype(np.int32), 0, rows - 1)
         c_idx = np.clip(((X[in_bounds] + half_w) / res).astype(np.int32), 0, cols - 1)
 
-        # Marcar suelo observado como libre
         grid[r_idx, c_idx] = GRID_FREE
 
-        # Rellenar el cono frontal visible con GRID_FREE para evitar huecos por perspectiva rasante
         start_c = cols // 2
         for r in range(rows):
             half_span = max(3, int((r + 2) * 0.65))
@@ -98,7 +88,6 @@ class OccupancyGridBuilder:
             unknown_slice = grid[r, c0:c1] == GRID_UNKNOWN
             grid[r, c0:c1][unknown_slice] = GRID_FREE
 
-        # Marcar píxeles de BOULDER y CREVICE
         b_in = in_bounds & b_sub
         if np.any(b_in):
             br = np.clip((Y[b_in] / res).astype(np.int32), 0, rows - 1)
@@ -111,7 +100,6 @@ class OccupancyGridBuilder:
             cc = np.clip(((X[c_in] + half_w) / res).astype(np.int32), 0, cols - 1)
             grid[cr, cc] = GRID_CREVICE
 
-        # Asegurar huella mínima de cada obstáculo detectado en la malla 2D
         for obs in obstacles:
             ox, oy, _ = obs.centroid_3d
             if -half_w <= ox < half_w and 0.0 <= oy < self.config.grid_depth_m:
@@ -119,7 +107,6 @@ class OccupancyGridBuilder:
                 code = GRID_BOULDER if obs.type == "BOULDER" else GRID_CREVICE
                 cv2.circle(grid, (ocol, orow), 2, int(code), thickness=-1)
 
-        # Inflación de seguridad por el radio del Rover/Astronauta
         hard_obstacle_mask = (
             (grid == GRID_BOULDER)
             | (grid == GRID_CREVICE)
@@ -132,7 +119,6 @@ class OccupancyGridBuilder:
         inflated_zone = (inflated_u8 > 0) & (~hard_obstacle_mask)
         grid[inflated_zone] = GRID_INFLATED
 
-        # Construcción del mapa de costos continuo mediante transformada de distancia
         free_for_dt = (~hard_obstacle_mask).astype(np.uint8)
         dist_cells = cv2.distanceTransform(free_for_dt, cv2.DIST_L2, 3)
         dist_m = dist_cells * res
@@ -144,7 +130,6 @@ class OccupancyGridBuilder:
         cost_grid[grid == GRID_INFLATED] += 8.0
         cost_grid[hard_obstacle_mask] = np.inf
 
-        # Evaluar corredor frontal seguro (`safe_corridor`)
         c_min = max(0, int(math.floor((half_w - self.config.corridor_half_width_m) / res)))
         c_max = min(cols, int(math.ceil((half_w + self.config.corridor_half_width_m) / res)))
         r_min = min(rows - 1, max(1, int(math.floor(0.25 / res))))

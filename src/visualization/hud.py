@@ -1,5 +1,3 @@
-"""Renderizador HUD Táctico Multi-Panel (RGB + Mapa Topográfico + Radar 2D + Telemetría)."""
-
 from __future__ import annotations
 
 import math
@@ -20,8 +18,6 @@ from src.models import (
 
 
 class HUDRenderer:
-    """Construye el dashboard visual en tiempo real (1280x720) del análisis de la D415."""
-
     def __init__(self, config: Optional[PipelineConfig] = None) -> None:
         self.config = config or PipelineConfig()
         self.canvas_w = 1280
@@ -34,14 +30,10 @@ class HUDRenderer:
         z_m: float,
         output: PipelineOutput,
     ) -> Optional[tuple[int, int]]:
-        """Proyecta un punto 3D (X_right, Y_forward, Z_up) al plano de imagen RGB (u, v)."""
         pitch_rad = math.radians(output.frame.imu_pitch)
         cos_p = math.cos(pitch_rad)
         sin_p = math.sin(pitch_rad)
 
-        # Inversa de la rotación de cámara:
-        # Y = z_cam * cos_p - y_up_cam * sin_p
-        # Z = z_cam * sin_p + y_up_cam * cos_p
         z_cam = y_m * cos_p + z_m * sin_p
         y_up_cam = -y_m * sin_p + z_m * cos_p
         if z_cam <= 0.15:
@@ -55,11 +47,9 @@ class HUDRenderer:
         return None
 
     def _render_rgb_panel(self, output: PipelineOutput) -> np.ndarray:
-        """Renderiza la vista RGB con bounding boxes de obstáculos y ruta proyectada."""
         rgb = output.frame.color_bgr.copy()
         h, w = rgb.shape[:2]
 
-        # Proyectar los puntos de la ruta óptima sobre el suelo en la vista de cámara
         ground_z = -output.terrain.altitude_m
         projected_pts: list[tuple[int, int]] = []
         for wx, wy in output.navigation.path_world_xy:
@@ -73,14 +63,13 @@ class HUDRenderer:
             pts_arr = np.array(projected_pts, dtype=np.int32).reshape((-1, 1, 2))
             cv2.polylines(rgb, [pts_arr], False, (0, 255, 120), 3, cv2.LINE_AA)
 
-        # Dibujar bounding boxes y etiquetas de cada obstáculo
         for obs in output.obstacles:
             x, y, bw, bh = obs.bbox_2d
             if obs.type == "BOULDER":
-                color = (30, 110, 255)  # Naranja/Rojo alerta
+                color = (30, 110, 255)
                 metric_str = f"H:{obs.magnitude_m:.2f}m"
             else:
-                color = (255, 210, 0)  # Cian alerta
+                color = (255, 210, 0)
                 metric_str = f"D:{obs.magnitude_m:.2f}m"
 
             cv2.rectangle(rgb, (x, y), (x + bw, y + bh), color, 2)
@@ -124,7 +113,6 @@ class HUDRenderer:
         boulder_mask: np.ndarray,
         crevice_mask: np.ndarray,
     ) -> np.ndarray:
-        """Renderiza el mapa de calor de profundidad y contornos de anomalías Delta_h."""
         depth = output.preprocessed_depth_m
         valid = output.terrain.valid_mask
 
@@ -138,7 +126,6 @@ class HUDRenderer:
         heatmap = cv2.applyColorMap(depth_u8, cv2.COLORMAP_TURBO)
         heatmap[~valid] = (18, 18, 24)
 
-        # Resaltar bordes morfológicos de BOULDER y CREVICE
         b_cnts, _ = cv2.findContours(
             boulder_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -163,7 +150,6 @@ class HUDRenderer:
         return panel
 
     def _render_occupancy_radar_panel(self, output: PipelineOutput) -> np.ndarray:
-        """Renderiza la Malla de Ocupación 2D (*Bird's-Eye View*) y la ruta A* / Dijkstra."""
         grid = output.navigation.occupancy_grid
         rows, cols = grid.shape
 
@@ -174,13 +160,11 @@ class HUDRenderer:
         radar_img[grid == GRID_CREVICE] = (240, 200, 25)
         radar_img[grid == GRID_STEEP] = (140, 40, 200)
 
-        # Invertir verticalmente para que row=0 (Rover) quede abajo y +Y apunte arriba
         radar_flipped = np.flipud(radar_img)
 
         map_w, map_h = 420, 620
         scaled = cv2.resize(radar_flipped, (map_w, map_h), interpolation=cv2.INTER_NEAREST)
 
-        # Líneas de referencia métrica cada 0.5 m
         sx = map_w / float(cols)
         sy = map_h / float(rows)
         res = self.config.grid_resolution_m
@@ -201,11 +185,9 @@ class HUDRenderer:
                     cv2.LINE_AA,
                 )
 
-        # Línea central (X = 0)
         cx_px = int(round((cols / 2.0) * sx))
         cv2.line(scaled, (cx_px, 0), (cx_px, map_h), (65, 80, 70), 1)
 
-        # Dibujar ruta óptima (A* / Dijkstra)
         if len(output.navigation.path_cells) >= 2:
             pts = []
             for r, c in output.navigation.path_cells:
@@ -216,7 +198,6 @@ class HUDRenderer:
             cv2.polylines(scaled, [pts_arr], False, (40, 255, 100), 3, cv2.LINE_AA)
             cv2.circle(scaled, tuple(pts[-1]), 6, (0, 255, 255), -1)
 
-        # Posición del Rover en la base
         sr, sc = output.navigation.start_cell
         rover_px = int(round((sc + 0.5) * sx))
         rover_py = int(round((rows - 1 - sr) * sy))
@@ -237,7 +218,6 @@ class HUDRenderer:
             cv2.LINE_AA,
         )
 
-        # Leyenda inferior del radar
         legend_y = 682
         items = [
             ("FREE", (44, 62, 50)),
@@ -269,7 +249,6 @@ class HUDRenderer:
         plane_locked: bool,
         source_name: str,
     ) -> np.ndarray:
-        """Renderiza la columna derecha con métricas en vivo y estado del contrato `drone_cv`."""
         side = np.full((720, 360, 3), (14, 17, 24), dtype=np.uint8)
         cv2.line(side, (0, 0), (0, 720), (45, 55, 75), 2)
 
@@ -399,7 +378,6 @@ class HUDRenderer:
                 )
                 y += 24
 
-        # Controles interactivos en la parte inferior
         ctrl_y = 585
         cv2.line(side, (16, ctrl_y - 16), (344, ctrl_y - 16), (40, 50, 65), 1)
         cv2.putText(
@@ -442,7 +420,6 @@ class HUDRenderer:
         plane_locked: bool = False,
         source_name: str = "Intel RealSense D415",
     ) -> np.ndarray:
-        """Ensambla el HUD completo (1280x720 BGR)."""
         canvas = np.zeros((self.canvas_h, self.canvas_w, 3), dtype=np.uint8)
 
         rgb_panel = self._render_rgb_panel(output)

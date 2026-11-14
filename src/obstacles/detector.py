@@ -1,5 +1,3 @@
-"""Segmentación morfológica y clustering espacial 3D con DBSCAN para `BOULDER` y `CREVICE`."""
-
 from __future__ import annotations
 
 import math
@@ -15,8 +13,6 @@ from src.preprocessing.filters import clean_binary_mask
 
 
 class ObstacleDetector:
-    """Ejecuta la Fase 3: detección de rocas (`BOULDER`) y grietas (`CREVICE`) en 3D."""
-
     def __init__(self, config: Optional[PipelineConfig] = None) -> None:
         self.config = config or PipelineConfig()
 
@@ -26,7 +22,6 @@ class ObstacleDetector:
         terrain: TerrainAnalysis,
         obs_type: ObstacleType,
     ) -> list[dict]:
-        """Agrupa píxeles anómalos mediante componentes conexos 2D + refinamiento 3D DBSCAN."""
         if not np.any(clean_mask):
             return []
 
@@ -56,7 +51,6 @@ class ObstacleDetector:
             heights = terrain.height_map_m[comp_ys, comp_xs]
 
             if self.config.use_dbscan and pts_3d.shape[0] >= self.config.dbscan_min_samples * 2:
-                # Submuestrear si el componente tiene demasiados píxeles para mantener <5 ms
                 n_pts = pts_3d.shape[0]
                 max_pts = max(200, int(self.config.dbscan_max_points))
                 if n_pts > max_pts:
@@ -113,13 +107,6 @@ class ObstacleDetector:
         self,
         terrain: TerrainAnalysis,
     ) -> tuple[list[Obstacle], np.ndarray, np.ndarray]:
-        """Detecta y clasifica todos los obstáculos `BOULDER` y `CREVICE` del frame actual.
-
-        Returns:
-            obstacles: Lista ordenada por cercanía (`distance_m`).
-            boulder_mask: Máscara booleana 2D de píxeles clasificados como `BOULDER`.
-            crevice_mask: Máscara booleana 2D de píxeles clasificados como `CREVICE`.
-        """
         raw_boulder = (
             terrain.valid_mask
             & (terrain.height_map_m >= self.config.boulder_min_height_m)
@@ -181,7 +168,6 @@ class ObstacleDetector:
                 )
             )
 
-        # Ordenar de más cercano a más lejano y asignar IDs 1..N
         unsorted_obstacles.sort(key=lambda o: o.distance_m)
         obstacles: list[Obstacle] = []
         for idx, obs in enumerate(unsorted_obstacles, start=1):

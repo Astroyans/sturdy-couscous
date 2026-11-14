@@ -1,5 +1,3 @@
-"""Planificador de ruta mínima sobre Malla de Ocupación mediante A* y Dijkstra."""
-
 from __future__ import annotations
 
 import heapq
@@ -19,9 +17,6 @@ from src.navigation.occupancy_grid import OccupancyGridBuilder
 
 
 class PathPlanner:
-    """Implementa búsqueda de camino óptimo libre de colisiones con A* y Dijkstra."""
-
-    # Vecindad 8-conexa: (d_row, d_col, step_distance)
     _NEIGHBORS: tuple[tuple[int, int, float], ...] = (
         (1, 0, 1.0),
         (0, -1, 1.0),
@@ -42,17 +37,13 @@ class PathPlanner:
         return cell_value in (GRID_BOULDER, GRID_CREVICE, GRID_STEEP)
 
     def _select_goal_cell(self, grid: np.ndarray, start_col: int) -> tuple[int, int]:
-        """Selecciona la celda meta más lejana y centrada que esté libre de obstáculos."""
         rows, cols = grid.shape
         for r in range(rows - 2, 1, -1):
-            # Buscar desde el centro hacia los lados
             for offset in range(cols // 2):
                 for c in (start_col - offset, start_col + offset):
                     if 0 <= c < cols and not self._is_blocked(int(grid[r, c])):
-                        # Preferir celdas no infladas en la primera pasada
                         if int(grid[r, c]) == 0:
                             return (r, c)
-            # Segunda pasada permitiendo celdas infladas si todo el frente está estrecho
             for offset in range(cols // 2):
                 for c in (start_col - offset, start_col + offset):
                     if 0 <= c < cols and not self._is_blocked(int(grid[r, c])):
@@ -66,7 +57,6 @@ class PathPlanner:
         safe_corridor: bool,
         algorithm: Optional[str] = None,
     ) -> NavigationResult:
-        """Calcula la ruta óptima usando `'astar'` o `'dijkstra'`."""
         planner_name = (algorithm or self.config.default_planner).lower().strip()
         if planner_name not in ("astar", "dijkstra"):
             planner_name = "astar"
@@ -127,7 +117,6 @@ class PathPlanner:
                         h = 0.0
                     heapq.heappush(open_heap, (tentative_g + h, nr, nc))
 
-        # Reconstrucción del camino desde `best_reached` hasta `start`
         path_cells: list[tuple[int, int]] = []
         curr = best_reached
         while curr in came_from:
@@ -140,7 +129,6 @@ class PathPlanner:
             self.grid_builder.cell_to_world(r, c) for (r, c) in path_cells
         ]
 
-        # Calcular rumbo recomendado hacia un punto de anticipación (lookahead ~1.0 m)
         recommended_heading_deg = 0.0
         if len(path_world_xy) >= 2:
             lookahead_pt = path_world_xy[min(len(path_world_xy) - 1, 18)]
