@@ -4,10 +4,12 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 
 import numpy as np
 
+from src.camera.raspi3_receiver import Raspi3ReceiverCamera
 from src.camera.realsense_d415 import RealSenseD415Camera
 from src.camera.synthetic import SyntheticTerrainCamera
 from src.config import PipelineConfig
@@ -23,9 +25,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        choices=["auto", "realsense", "synthetic"],
+        choices=["auto", "realsense", "raspi3", "synthetic"],
         default="auto",
-        help="Fuente de camara: 'realsense' (D415), 'synthetic' (simulador 3D) o 'auto'.",
+        help="Fuente de camara: 'realsense' (D415 USB), 'raspi3' (LAN TCP puerto 8766), 'synthetic' o 'auto'.",
+    )
+    parser.add_argument(
+        "--raspi-port",
+        type=int,
+        default=8766,
+        help="Puerto TCP de entrada para recibir RGB-D desde la Raspberry Pi 3 (por defecto 8766).",
+    )
+    parser.add_argument(
+        "--raspi-host",
+        default="",
+        help="IP opcional de la Raspberry Pi 3 si la laptop se conecta como cliente TCP en lugar de escuchar.",
     )
     parser.add_argument(
         "--transport",
@@ -133,7 +146,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def create_and_start_camera(source: str, config: PipelineConfig):
+def create_and_start_camera(
+    source: str,
+    config: PipelineConfig,
+    raspi_port: int = 8766,
+    raspi_host: str = "",
+):
+    if source == "raspi3":
+        cam = Raspi3ReceiverCamera(
+            config=config,
+            port=raspi_port,
+            remote_host=raspi_host,
+        )
+        mode_desc = (
+            f"cliente -> {raspi_host}:{raspi_port}"
+            if raspi_host
+            else f"servidor TCP escuchando en 0.0.0.0:{raspi_port}"
+        )
+        print(f"[INFO] Esperando stream de Raspberry Pi 3 ({mode_desc})...")
+        cam.start(wait_for_first_frame=True)
+        print(f"[INFO] Enlace Raspi 3 activo: {cam.device_name}")
+        return cam, "raspi3"
+
     if source == "synthetic":
         cam = SyntheticTerrainCamera(config, terrain_incline_deg=6.0, animate=True)
         cam.start()
@@ -159,16 +193,20 @@ def create_and_start_camera(source: str, config: PipelineConfig):
 
 
 def _atomic_write_json(path: str, obj: dict, indent: int | None = None) -> None:
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        if indent is None:
-            json.dump(obj, f, separators=(",", ":"))
-        else:
-            json.dump(obj, f, indent=indent)
+    tmp = f"{path}.{os.getpid()}.tmp"
     try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            if indent is None:
+                json.dump(obj, f, separators=(",", ":"))
+            else:
+                json.dump(obj, f, indent=indent)
         os.replace(tmp, path)
-    except PermissionError:
-        pass
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def export_local_cache(
@@ -177,32 +215,107 @@ def export_local_cache(
     map_state: dict | None = None,
     captures_dir: str = "captures",
 ) -> None:
-    os.makedirs(captures_dir, exist_ok=True)
-    _atomic_write_json(os.path.join(captures_dir, "latest_expo_payload.json"), payload)
-
-    light_payload = {k: v for k, v in payload.items() if k != "images"}
-    _atomic_write_json(
-        os.path.join(captures_dir, "latest_drone_cv.json"),
-        light_payload,
-        indent=2,
-    )
-
-    if map_state is not None:
-        _atomic_write_json(os.path.join(captures_dir, "real_map_state.json"), map_state)
-
-    tmp_npz = os.path.join(captures_dir, "latest_map_state.tmp.npz")
-    final_npz = os.path.join(captures_dir, "latest_map_state.npz")
-    np.savez_compressed(
-        tmp_npz,
-        occupancy_grid=output.navigation.occupancy_grid,
-        cost_grid=output.navigation.cost_grid,
-        height_map_m=output.terrain.height_map_m,
-        slope_map_deg=output.terrain.slope_map_deg,
-    )
     try:
+        os.makedirs(captures_dir, exist_ok=True)
+        _atomic_write_json(os.path.join(captures_dir, "latest_expo_payload.json"), payload)
+
+        light_payload = {k: v for k, v in payload.items() if k != "images"}
+        _atomic_write_json(
+            os.path.join(captures_dir, "latest_drone_cv.json"),
+            light_payload,
+            indent=2,
+        )
+
+        if map_state is not None:
+            _atomic_write_json(os.path.join(captures_dir, "real_map_state.json"), map_state)
+
+        tmp_npz = os.path.join(captures_dir, f"latest_map_state.{os.getpid()}.tmp.npz")
+        final_npz = os.path.join(captures_dir, "latest_map_state.npz")
+        np.savez_compressed(
+            tmp_npz,
+            occupancy_grid=output.navigation.occupancy_grid,
+            cost_grid=output.navigation.cost_grid,
+            height_map_m=output.terrain.height_map_m,
+            slope_map_deg=output.terrain.slope_map_deg,
+        )
         os.replace(tmp_npz, final_npz)
-    except PermissionError:
+    except OSError:
         pass
+
+
+class _AsyncCacheWriter:
+    def __init__(self, captures_dir: str = "captures") -> None:
+        self.captures_dir = captures_dir
+        self._lock = threading.Lock()
+        self._event = threading.Event()
+        self._pending: tuple | None = None
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, payload: dict, output, map_state: dict | None = None) -> None:
+        snapshot = (
+            payload,
+            output.navigation.occupancy_grid.copy(),
+            output.navigation.cost_grid.copy(),
+            output.terrain.height_map_m.copy(),
+            output.terrain.slope_map_deg.copy(),
+            map_state,
+        )
+        with self._lock:
+            self._pending = snapshot
+        self._event.set()
+
+    def _run(self) -> None:
+        while self._running:
+            if not self._event.wait(timeout=0.5):
+                continue
+            self._event.clear()
+            with self._lock:
+                item = self._pending
+                self._pending = None
+            if item is None:
+                continue
+            payload, occ, cost, height_m, slope_deg, map_state = item
+            try:
+                os.makedirs(self.captures_dir, exist_ok=True)
+                _atomic_write_json(
+                    os.path.join(self.captures_dir, "latest_expo_payload.json"), payload
+                )
+                light_payload = {k: v for k, v in payload.items() if k != "images"}
+                _atomic_write_json(
+                    os.path.join(self.captures_dir, "latest_drone_cv.json"),
+                    light_payload,
+                    indent=2,
+                )
+                if map_state is not None:
+                    _atomic_write_json(
+                        os.path.join(self.captures_dir, "real_map_state.json"), map_state
+                    )
+                tmp_npz = os.path.join(self.captures_dir, f"latest_map_state.{os.getpid()}.tmp.npz")
+                final_npz = os.path.join(self.captures_dir, "latest_map_state.npz")
+                np.savez_compressed(
+                    tmp_npz,
+                    occupancy_grid=occ,
+                    cost_grid=cost,
+                    height_map_m=height_m,
+                    slope_map_deg=slope_deg,
+                )
+                os.replace(tmp_npz, final_npz)
+            except OSError:
+                pass
+
+    def stop(self) -> None:
+        self._running = False
+        self._event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=1.5)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,7 +328,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        camera, active_source = create_and_start_camera(args.source, config)
+        camera, active_source = create_and_start_camera(
+            args.source,
+            config,
+            raspi_port=args.raspi_port,
+            raspi_host=args.raspi_host,
+        )
     except RuntimeError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
@@ -244,6 +362,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sender.start()
+    cache_writer = None if args.no_local_cache else _AsyncCacheWriter()
+    if cache_writer is not None:
+        cache_writer.start()
     if lan_server is not None:
         lan_server.start()
         lan_ip = get_local_lan_ip()
@@ -286,8 +407,8 @@ def main(argv: list[str] | None = None) -> int:
             sender.enqueue(payload)
             if lan_server is not None:
                 lan_server.publish(payload, map_state=map_state)
-            if not args.no_local_cache:
-                export_local_cache(payload, output, map_state=map_state)
+            if cache_writer is not None:
+                cache_writer.enqueue(payload, output, map_state=map_state)
 
             frame_count += 1
             if frame_count == 1 or frame_count % 10 == 0 or (
@@ -309,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if lan_server is not None:
             lan_server.stop()
+        if cache_writer is not None:
+            cache_writer.stop()
         sender.stop()
         camera.stop()
 

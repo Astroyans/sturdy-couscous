@@ -109,11 +109,56 @@ class ExpoLANServer:
         self._ws_clients: set[Any] = set()
         self._raw_ws_clients: dict[socket.socket, threading.Lock] = {}
 
+        self._tx_event = threading.Event()
+        self._tx_thread: Optional[threading.Thread] = None
+        self._pending_tx: Optional[tuple[str, bytes]] = None
+
         self._http_server: Optional[ThreadingHTTPServer] = None
         self._http_thread: Optional[threading.Thread] = None
         self._ws_server: Any = None
         self._ws_thread: Optional[threading.Thread] = None
         self._running = False
+
+    def _broadcast_loop(self) -> None:
+        while self._running:
+            if not self._tx_event.wait(timeout=0.5):
+                continue
+            self._tx_event.clear()
+            with self._lock:
+                pending = self._pending_tx
+                self._pending_tx = None
+            if pending is None:
+                continue
+            raw_str, raw_bytes = pending
+
+            with self._ws_clients_lock:
+                clients = list(self._ws_clients)
+                raw_clients = list(self._raw_ws_clients.items())
+
+            dead = []
+            for ws in clients:
+                try:
+                    ws.send(raw_str)
+                except Exception:
+                    dead.append(ws)
+            if dead:
+                with self._ws_clients_lock:
+                    for ws in dead:
+                        self._ws_clients.discard(ws)
+
+            if raw_clients:
+                frame = _encode_ws_frame(raw_bytes, opcode=0x1)
+                dead_raw = []
+                for sock, wlock in raw_clients:
+                    try:
+                        with wlock:
+                            sock.sendall(frame)
+                    except Exception:
+                        dead_raw.append(sock)
+                if dead_raw:
+                    with self._ws_clients_lock:
+                        for sock in dead_raw:
+                            self._raw_ws_clients.pop(sock, None)
 
     def publish(
         self,
@@ -131,36 +176,9 @@ class ExpoLANServer:
             self._latest_json_bytes = raw_bytes
             if map_bytes is not None:
                 self._latest_map_state_bytes = map_bytes
+            self._pending_tx = (raw_str, raw_bytes)
 
-        with self._ws_clients_lock:
-            clients = list(self._ws_clients)
-            raw_clients = list(self._raw_ws_clients.items())
-
-        dead = []
-        for ws in clients:
-            try:
-                ws.send(raw_str)
-            except Exception:
-                dead.append(ws)
-
-        if dead:
-            with self._ws_clients_lock:
-                for ws in dead:
-                    self._ws_clients.discard(ws)
-
-        if raw_clients:
-            frame = _encode_ws_frame(raw_bytes, opcode=0x1)
-            dead_raw = []
-            for sock, wlock in raw_clients:
-                try:
-                    with wlock:
-                        sock.sendall(frame)
-                except Exception:
-                    dead_raw.append(sock)
-            if dead_raw:
-                with self._ws_clients_lock:
-                    for sock in dead_raw:
-                        self._raw_ws_clients.pop(sock, None)
+        self._tx_event.set()
 
     def pop_goal_command(self) -> Optional[dict[str, Any]]:
         with self._goal_lock:
@@ -228,6 +246,10 @@ class ExpoLANServer:
                 self.wfile.flush()
 
                 sock = self.request
+                try:
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
                 wlock = threading.Lock()
                 with parent._ws_clients_lock:
                     parent._raw_ws_clients[sock] = wlock
@@ -322,6 +344,10 @@ class ExpoLANServer:
             target=self._http_server.serve_forever, daemon=True
         )
         self._http_thread.start()
+        self._tx_thread = threading.Thread(
+            target=self._broadcast_loop, daemon=True
+        )
+        self._tx_thread.start()
 
         if (
             ws_serve is not None
@@ -358,6 +384,7 @@ class ExpoLANServer:
 
     def stop(self) -> None:
         self._running = False
+        self._tx_event.set()
         with self._ws_clients_lock:
             raw_socks = list(self._raw_ws_clients.keys())
             self._raw_ws_clients.clear()
