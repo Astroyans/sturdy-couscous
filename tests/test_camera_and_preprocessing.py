@@ -40,6 +40,7 @@ def test_clean_binary_mask_removes_isolated_speckles():
     assert cleaned[45, 45]
 
 
-def test_realsense_device_enumeration_works():
-    devices = RealSenseD415Camera.list_connected_devices()
-    assert isinstance(devices, list)
+def test_realsense_camera_wrapper_initializes():
+    cam = RealSenseD415Camera(PipelineConfig())
+    assert cam.device_name == "Intel RealSense D415"
+    assert cam.pipeline is None
