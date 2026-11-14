@@ -60,17 +60,6 @@ class HUDRenderer:
         rgb = output.frame.color_bgr.copy()
         h, w = rgb.shape[:2]
 
-        ground_z = -output.terrain.altitude_m
-        projected_pts: list[tuple[int, int]] = []
-        for wx, wy in output.navigation.path_world_xy:
-            uv = self._project_world_to_pixel(wx, wy, ground_z, output)
-            if uv is not None:
-                projected_pts.append(uv)
-
-        if len(projected_pts) >= 2:
-            pts_arr = np.array(projected_pts, dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(rgb, [pts_arr], False, (0, 255, 120), 3, cv2.LINE_AA)
-
         live_obstacles = (
             output.frame_obstacles
             if output.frame_obstacles is not None
@@ -112,7 +101,7 @@ class HUDRenderer:
         cv2.rectangle(panel, (0, 0), (480, 28), (18, 22, 30), -1)
         cv2.putText(
             panel,
-            "1. RGB TACTICAL FEED + 3D OBSTACLE & PATH OVERLAY",
+            "1. RGB TACTICAL FEED + 3D OBSTACLE OVERLAY",
             (10, 19),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.46,
@@ -209,15 +198,6 @@ class HUDRenderer:
         cx_px = int(round((cols / 2.0) * sx))
         cv2.line(scaled, (cx_px, 0), (cx_px, map_h), (65, 80, 70), 1)
 
-        if len(output.navigation.trajectory_cells) >= 2:
-            t_pts = []
-            for r, c in output.navigation.trajectory_cells:
-                px = int(round((c + 0.5) * sx))
-                py = int(round((rows - 1 - r + 0.5) * sy))
-                t_pts.append([px, py])
-            t_arr = np.array(t_pts, dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(scaled, [t_arr], False, (255, 180, 60), 2, cv2.LINE_AA)
-
         # Dibujar ruta Dijkstra (azul/cian) y ruta A* (verde brillante) simultaneamente
         if len(output.navigation.dijkstra_path_cells) >= 2:
             d_pts = [
@@ -235,17 +215,6 @@ class HUDRenderer:
             a_arr = np.array(a_pts, dtype=np.int32).reshape((-1, 1, 2))
             cv2.polylines(scaled, [a_arr], False, (40, 255, 100), 2, cv2.LINE_AA)
             cv2.circle(scaled, tuple(a_pts[-1]), 6, (0, 255, 255), -1)
-
-        sr, sc = output.navigation.start_cell
-        base_px = int(round((sc + 0.5) * sx))
-        base_py = int(round((rows - 1 - sr) * sy))
-        cv2.rectangle(
-            scaled,
-            (base_px - 6, base_py - 6),
-            (base_px + 6, base_py + 6),
-            (220, 220, 220),
-            -1,
-        )
 
         cr, cc = output.navigation.current_cell
         rover_px = int(round((cc + 0.5) * sx))

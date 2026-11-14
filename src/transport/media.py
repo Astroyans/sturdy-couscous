@@ -168,14 +168,6 @@ def render_route_map(
     cx_px = int(round((cols / 2.0) * sx))
     cv2.line(scaled, (cx_px, 0), (cx_px, map_h), (65, 80, 70), 1)
 
-    if len(output.navigation.trajectory_cells) >= 2:
-        t_pts = [
-            [int(round((c + 0.5) * sx)), int(round((rows - 1 - r + 0.5) * sy))]
-            for r, c in output.navigation.trajectory_cells
-        ]
-        t_arr = np.array(t_pts, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.polylines(scaled, [t_arr], False, (255, 180, 60), 2, cv2.LINE_AA)
-
     if len(output.navigation.dijkstra_path_cells) >= 2:
         d_pts = [
             [int(round((c + 0.5) * sx)), int(round((rows - 1 - r + 0.5) * sy))]
@@ -192,17 +184,6 @@ def render_route_map(
         a_arr = np.array(a_pts, dtype=np.int32).reshape((-1, 1, 2))
         cv2.polylines(scaled, [a_arr], False, (40, 255, 100), 2, cv2.LINE_AA)
         cv2.circle(scaled, tuple(a_pts[-1]), 6, (0, 255, 255), -1)
-
-    sr, sc = output.navigation.start_cell
-    base_px = int(round((sc + 0.5) * sx))
-    base_py = int(round((rows - 1 - sr) * sy))
-    cv2.rectangle(
-        scaled,
-        (base_px - 6, base_py - 6),
-        (base_px + 6, base_py + 6),
-        (220, 220, 220),
-        -1,
-    )
 
     cr, cc = output.navigation.current_cell
     rover_px = int(round((cc + 0.5) * sx))
