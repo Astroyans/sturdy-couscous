@@ -11,7 +11,7 @@ from src.camera.synthetic import SyntheticTerrainCamera
 from src.config import PipelineConfig
 from src.pipeline import TerrainNavigationPipeline
 from src.transport.client import TelemetrySender
-from src.transport.media import build_expo_payload
+from src.transport.media import build_expo_payload, build_map_state_payload
 from src.transport.server import ExpoLANServer
 
 
@@ -36,6 +36,8 @@ def test_build_expo_payload_contains_telemetry_and_three_jpegs():
     )
 
     assert payload["node"] == "drone_cv"
+    assert payload["node_id"] == "drone_cv"
+    assert "map_state" not in payload["data"]
     assert "altitude_m" in payload["data"]
     assert "navigation" in payload["data"]
     assert "astar" in payload["data"]["navigation"]
@@ -54,6 +56,32 @@ def test_build_expo_payload_contains_telemetry_and_three_jpegs():
         decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         assert decoded is not None
         assert decoded.shape == (480, 640, 3)
+
+
+def test_build_map_state_payload_matches_fullstack_schema():
+    cfg = PipelineConfig()
+    cam = SyntheticTerrainCamera(cfg)
+    cam.start()
+    frame = cam.read_frame()
+    cam.stop()
+
+    pipeline = TerrainNavigationPipeline(cfg)
+    output, _, _ = pipeline.process_frame(frame)
+    map_state = build_map_state_payload(output, cfg)
+
+    assert map_state["grid_rows"] == 120
+    assert map_state["grid_cols"] == 80
+    assert map_state["resolution_m"] == 0.05
+    assert map_state["width_m"] == 4.0
+    assert map_state["height_m"] == 6.0
+    assert len(map_state["occupancy_grid"]) == 120
+    assert len(map_state["occupancy_grid"][0]) == 80
+    assert len(map_state["cost_grid"]) == 120
+    assert len(map_state["cost_grid"][0]) == 80
+    assert len(map_state["camera_height_grid_60x80"]) == 60
+    assert len(map_state["camera_height_grid_60x80"][0]) == 80
+    assert len(map_state["camera_slope_grid_60x80"]) == 60
+    assert len(map_state["camera_slope_grid_60x80"][0]) == 80
 
 
 def test_telemetry_sender_http_delivers_payload():
@@ -115,25 +143,80 @@ def test_telemetry_sender_does_not_block_when_backend_offline():
         sender.stop()
 
 
-def test_expo_lan_server_serves_latest_and_accepts_goal_for_ipad():
+def test_expo_lan_server_unified_port_http_and_websocket():
     import requests
+    from websockets.sync.client import connect as ws_connect
 
-    srv = ExpoLANServer(host="127.0.0.1", http_port=0, ws_port=-1)
+    srv = ExpoLANServer(host="127.0.0.1", http_port=0)
     srv.start()
     try:
-        srv.publish({"node": "drone_cv", "data": {"altitude_m": 5.2}})
-        r1 = requests.get(f"http://127.0.0.1:{srv.http_port}/api/latest", timeout=2.0)
-        assert r1.status_code == 200
-        assert r1.json()["data"]["altitude_m"] == 5.2
+        assert srv.http_port == srv.ws_port
+        port = srv.http_port
 
-        r2 = requests.post(
-            f"http://127.0.0.1:{srv.http_port}/api/goal",
+        sample_payload = {
+            "node": "drone_cv",
+            "node_id": "drone_cv",
+            "timestamp": 1700000000,
+            "data": {"altitude_m": 5.2},
+        }
+        sample_map = {
+            "grid_rows": 120,
+            "grid_cols": 80,
+            "resolution_m": 0.05,
+            "width_m": 4.0,
+            "height_m": 6.0,
+            "origin_x_m": -2.0,
+            "origin_y_m": 0.0,
+            "occupancy_grid": [[0] * 80 for _ in range(120)],
+            "cost_grid": [[1.0] * 80 for _ in range(120)],
+        }
+        srv.publish(sample_payload, map_state=sample_map)
+
+        r_latest = requests.get(f"http://127.0.0.1:{port}/latest_expo_payload.json", timeout=2.0)
+        assert r_latest.status_code == 200
+        assert r_latest.json()["data"]["altitude_m"] == 5.2
+
+        r_map = requests.get(f"http://127.0.0.1:{port}/map_state.json", timeout=2.0)
+        assert r_map.status_code == 200
+        assert r_map.json()["grid_rows"] == 120
+        assert r_map.json()["grid_cols"] == 80
+
+        r_map2 = requests.get(f"http://127.0.0.1:{port}/data/real_map_state.json", timeout=2.0)
+        assert r_map2.status_code == 200
+        assert r_map2.json()["grid_rows"] == 120
+
+        with ws_connect(f"ws://127.0.0.1:{port}", open_timeout=2.0) as ws:
+            initial_msg = json.loads(ws.recv(timeout=2.0))
+            assert initial_msg["node"] == "drone_cv"
+            assert initial_msg["data"]["altitude_m"] == 5.2
+
+            srv.publish(
+                {
+                    "node": "drone_cv",
+                    "node_id": "drone_cv",
+                    "timestamp": 1700000001,
+                    "data": {"altitude_m": 6.1},
+                }
+            )
+            next_msg = json.loads(ws.recv(timeout=2.0))
+            assert next_msg["data"]["altitude_m"] == 6.1
+
+            ws.send(json.dumps({"norm_x": 0.35, "norm_y": 0.2}))
+            deadline = time.time() + 2.0
+            cmd = None
+            while time.time() < deadline and cmd is None:
+                cmd = srv.pop_goal_command()
+                if cmd is None:
+                    time.sleep(0.02)
+            assert cmd == {"norm_x": 0.35, "norm_y": 0.2}
+
+        r_goal = requests.post(
+            f"http://127.0.0.1:{port}/api/goal",
             json={"norm_x": 0.4, "norm_y": 0.25},
             timeout=2.0,
         )
-        assert r2.status_code == 200
-        cmd = srv.pop_goal_command()
-        assert cmd == {"norm_x": 0.4, "norm_y": 0.25}
+        assert r_goal.status_code == 200
+        assert srv.pop_goal_command() == {"norm_x": 0.4, "norm_y": 0.25}
     finally:
         srv.stop()
 

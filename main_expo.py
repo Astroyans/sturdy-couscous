@@ -13,13 +13,13 @@ from src.camera.synthetic import SyntheticTerrainCamera
 from src.config import PipelineConfig
 from src.pipeline import TerrainNavigationPipeline
 from src.transport.client import TelemetrySender
-from src.transport.media import build_expo_payload
+from src.transport.media import build_expo_payload, build_map_state_payload
 from src.transport.server import ExpoLANServer, get_local_lan_ip
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Rover D415 Real Headless Telemetry & Media Streamer for Expo Go (iPad A16)"
+        description="Rover D415 Real Headless Telemetry & Media Streamer for Expo Go (iPad A16) & Web Dashboard"
     )
     parser.add_argument(
         "--source",
@@ -61,21 +61,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Angulo nominal de inclinacion de montaje de la camara en grados (-90.0 = vista aerea cenital).",
     )
     parser.add_argument(
+        "--port",
         "--http-port",
+        dest="http_port",
         type=int,
-        default=8000,
-        help="Puerto HTTP LAN directo para que el iPad (Expo Go) consulte /api/latest y envie /api/goal.",
+        default=8765,
+        help="Puerto unificado LAN (WebSocket + HTTP en el mismo puerto, por defecto 8765 para full-stack).",
     )
     parser.add_argument(
         "--ws-port",
         type=int,
-        default=8001,
-        help="Puerto WebSocket LAN directo para streaming en tiempo real hacia el iPad.",
+        default=None,
+        help="Puerto WebSocket separado opcional (por defecto None = comparte --port 8765 con HTTP).",
     )
     parser.add_argument(
         "--no-server",
         action="store_true",
-        help="Desactivar el servidor LAN integrado hacia el iPad.",
+        help="Desactivar el servidor LAN integrado hacia el iPad / Dashboard.",
     )
     parser.add_argument(
         "--boulder-min-height",
@@ -172,6 +174,7 @@ def _atomic_write_json(path: str, obj: dict, indent: int | None = None) -> None:
 def export_local_cache(
     payload: dict,
     output,
+    map_state: dict | None = None,
     captures_dir: str = "captures",
 ) -> None:
     os.makedirs(captures_dir, exist_ok=True)
@@ -183,6 +186,9 @@ def export_local_cache(
         light_payload,
         indent=2,
     )
+
+    if map_state is not None:
+        _atomic_write_json(os.path.join(captures_dir, "real_map_state.json"), map_state)
 
     tmp_npz = os.path.join(captures_dir, "latest_map_state.tmp.npz")
     final_npz = os.path.join(captures_dir, "latest_map_state.npz")
@@ -233,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         args.transport if args.url and args.transport != "dry-run" else "dry-run"
     )
     print(
-        f"[INFO] Nodo real Expo Go iniciado | Fuente: {active_source} | "
+        f"[INFO] Nodo real drone_cv iniciado | Fuente: {active_source} | "
         f"Pitch: {args.pitch:.0f}deg | Transporte externo: {effective_transport}"
     )
 
@@ -242,10 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         lan_server.start()
         lan_ip = get_local_lan_ip()
         print(
-            f"[LAN->iPad] Conectarse desde Expo Go en iPad A16:\n"
+            f"[LAN->full-stack] Conectarse desde Dashboard Web / Expo Go (iPad A16):\n"
             f"  -> WebSocket Stream : ws://{lan_ip}:{lan_server.ws_port}\n"
-            f"  -> HTTP Latest JSON : http://{lan_ip}:{lan_server.http_port}/api/latest\n"
-            f"  -> HTTP Click Destino: POST http://{lan_ip}:{lan_server.http_port}/api/goal"
+            f"  -> HTTP Map State   : http://{lan_ip}:{lan_server.http_port}/map_state.json\n"
+            f"  -> HTTP Latest JSON : http://{lan_ip}:{lan_server.http_port}/latest_expo_payload.json\n"
+            f"  -> HTTP Click Goal  : POST http://{lan_ip}:{lan_server.http_port}/api/goal"
         )
     frame_count = 0
 
@@ -274,12 +281,13 @@ def main(argv: list[str] | None = None) -> int:
                 jpeg_quality=args.jpeg_quality,
                 annotate_rgb=not args.raw_rgb,
             )
+            map_state = build_map_state_payload(output=output, config=config)
 
             sender.enqueue(payload)
             if lan_server is not None:
-                lan_server.publish(payload)
+                lan_server.publish(payload, map_state=map_state)
             if not args.no_local_cache:
-                export_local_cache(payload, output)
+                export_local_cache(payload, output, map_state=map_state)
 
             frame_count += 1
             if frame_count == 1 or frame_count % 10 == 0 or (

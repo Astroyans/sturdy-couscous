@@ -220,6 +220,42 @@ def render_route_map(
     return canvas
 
 
+def build_map_state_payload(
+    output: PipelineOutput,
+    config: Optional[PipelineConfig] = None,
+) -> dict[str, Any]:
+    cfg = config or PipelineConfig()
+    occ = output.navigation.occupancy_grid
+    cost = output.navigation.cost_grid
+    rows, cols = occ.shape
+
+    clean_cost = np.where(np.isfinite(cost), np.round(cost, 2), 999.0)
+    h_small = cv2.resize(
+        output.terrain.height_map_m.astype(np.float32),
+        (80, 60),
+        interpolation=cv2.INTER_AREA,
+    )
+    s_small = cv2.resize(
+        output.terrain.slope_map_deg.astype(np.float32),
+        (80, 60),
+        interpolation=cv2.INTER_AREA,
+    )
+
+    return {
+        "grid_rows": int(rows),
+        "grid_cols": int(cols),
+        "resolution_m": round(float(cfg.grid_resolution_m), 3),
+        "width_m": round(float(cols * cfg.grid_resolution_m), 2),
+        "height_m": round(float(rows * cfg.grid_resolution_m), 2),
+        "origin_x_m": round(-float(cols * cfg.grid_resolution_m) / 2.0, 2),
+        "origin_y_m": 0.0,
+        "occupancy_grid": occ.astype(int).tolist(),
+        "cost_grid": clean_cost.tolist(),
+        "camera_height_grid_60x80": np.round(h_small, 3).tolist(),
+        "camera_slope_grid_60x80": np.round(s_small, 1).tolist(),
+    }
+
+
 def build_expo_payload(
     output: PipelineOutput,
     config: Optional[PipelineConfig] = None,
@@ -231,6 +267,7 @@ def build_expo_payload(
     annotate_rgb: bool = True,
 ) -> dict[str, Any]:
     payload = output.to_drone_cv_payload()
+    payload["node_id"] = payload.get("node", "drone_cv")
     rgb_img = render_rgb_annotated(output) if annotate_rgb else output.frame.color_bgr
     depth_img = render_depth_map(output, config, boulder_mask, crevice_mask)
     route_img = render_route_map(output, config, width=image_width, height=image_height)
