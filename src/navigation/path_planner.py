@@ -50,7 +50,6 @@ class PathPlanner:
         min_row: int = 0,
     ) -> tuple[int, int]:
         rows, cols = grid.shape
-        # Buscar la frontera explorada (GRID_FREE) mas lejana hacia adelante
         for r in range(rows - 2, max(1, min_row), -1):
             for offset in range(cols // 2):
                 for c in (preferred_col - offset, preferred_col + offset):
@@ -132,6 +131,36 @@ class PathPlanner:
         path_cells.reverse()
         return path_cells, explored, best_reached
 
+    def _compute_route_for_mode(
+        self,
+        occupancy_grid: np.ndarray,
+        cost_grid: np.ndarray,
+        base_cell: tuple[int, int],
+        current_cell: tuple[int, int],
+        frontier_goal: tuple[int, int],
+        navigation_mode: str,
+        use_heuristic: bool,
+    ) -> tuple[list[tuple[int, int]], int, tuple[int, int]]:
+        if navigation_mode == "RETURN_TO_BASE":
+            start_search = current_cell if current_cell != base_cell else frontier_goal
+            goal_search = base_cell
+            return self._run_search(
+                occupancy_grid, cost_grid, start_search, goal_search, use_heuristic
+            )
+
+        if current_cell != base_cell:
+            path_base_to_curr, exp1, _ = self._run_search(
+                occupancy_grid, cost_grid, base_cell, current_cell, use_heuristic
+            )
+            path_curr_to_goal, exp2, reached = self._run_search(
+                occupancy_grid, cost_grid, current_cell, frontier_goal, use_heuristic
+            )
+            return path_base_to_curr[:-1] + path_curr_to_goal, exp1 + exp2, reached
+
+        return self._run_search(
+            occupancy_grid, cost_grid, base_cell, frontier_goal, use_heuristic
+        )
+
     def plan(
         self,
         occupancy_grid: np.ndarray,
@@ -149,35 +178,38 @@ class PathPlanner:
         base_cell = (0, cols // 2)
         current_pose = pose or Pose2D()
         current_cell = self.grid_builder.world_to_cell(current_pose.x_m, current_pose.y_m)
+        frontier_goal = self._select_frontier_goal_cell(
+            occupancy_grid, current_cell[1], min_row=current_cell[0]
+        )
 
-        use_heuristic = planner_name == "astar"
+        # Ejecutar automaticamente ambos algoritmos (A* y Dijkstra) sobre el mapa acumulado
+        astar_cells, astar_exp, astar_reached = self._compute_route_for_mode(
+            occupancy_grid,
+            cost_grid,
+            base_cell,
+            current_cell,
+            frontier_goal,
+            navigation_mode,
+            use_heuristic=True,
+        )
+        dijkstra_cells, dijkstra_exp, dijkstra_reached = self._compute_route_for_mode(
+            occupancy_grid,
+            cost_grid,
+            base_cell,
+            current_cell,
+            frontier_goal,
+            navigation_mode,
+            use_heuristic=False,
+        )
 
-        if navigation_mode == "RETURN_TO_BASE":
-            # Modo Contingencia EVA: planifica desde la posicion actual (o frontera) de regreso a la Base (0,0)
-            start_search = current_cell if current_cell != base_cell else self._select_frontier_goal_cell(occupancy_grid, base_cell[1])
-            goal_search = base_cell
-            path_cells, explored, reached = self._run_search(
-                occupancy_grid, cost_grid, start_search, goal_search, use_heuristic
-            )
+        if planner_name == "astar":
+            path_cells = astar_cells
+            explored = astar_exp
+            reached = astar_reached
         else:
-            # Modo Exploracion Acumulativa: traza la ruta global sobre todo el mapa acumulado
-            # pasando desde la base / posicion actual hacia la frontera segura mas lejana
-            frontier_goal = self._select_frontier_goal_cell(
-                occupancy_grid, current_cell[1], min_row=current_cell[0]
-            )
-            if current_cell != base_cell:
-                path_base_to_curr, exp1, _ = self._run_search(
-                    occupancy_grid, cost_grid, base_cell, current_cell, use_heuristic
-                )
-                path_curr_to_goal, exp2, reached = self._run_search(
-                    occupancy_grid, cost_grid, current_cell, frontier_goal, use_heuristic
-                )
-                path_cells = path_base_to_curr[:-1] + path_curr_to_goal
-                explored = exp1 + exp2
-            else:
-                path_cells, explored, reached = self._run_search(
-                    occupancy_grid, cost_grid, base_cell, frontier_goal, use_heuristic
-                )
+            path_cells = dijkstra_cells
+            explored = dijkstra_exp
+            reached = dijkstra_reached
 
         path_world_xy = [
             self.grid_builder.cell_to_world(r, c) for (r, c) in path_cells
@@ -185,7 +217,6 @@ class PathPlanner:
 
         recommended_heading_deg = 0.0
         if len(path_world_xy) >= 2:
-            # Buscar waypoint adelante de la posicion actual
             ahead_pts = [
                 (wx, wy)
                 for (wx, wy) in path_world_xy
@@ -208,6 +239,10 @@ class PathPlanner:
             cost_grid=cost_grid,
             path_cells=path_cells,
             path_world_xy=path_world_xy,
+            astar_path_cells=astar_cells,
+            dijkstra_path_cells=dijkstra_cells,
+            astar_explored_nodes=astar_exp,
+            dijkstra_explored_nodes=dijkstra_exp,
             safe_corridor=safe_corridor,
             recommended_heading_deg=recommended_heading_deg,
             planner_used=planner_name,

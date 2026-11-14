@@ -200,7 +200,6 @@ class HUDRenderer:
         cx_px = int(round((cols / 2.0) * sx))
         cv2.line(scaled, (cx_px, 0), (cx_px, map_h), (65, 80, 70), 1)
 
-        # Traza historica del recorrido del Dron/Rover
         if len(output.navigation.trajectory_cells) >= 2:
             t_pts = []
             for r, c in output.navigation.trajectory_cells:
@@ -210,23 +209,24 @@ class HUDRenderer:
             t_arr = np.array(t_pts, dtype=np.int32).reshape((-1, 1, 2))
             cv2.polylines(scaled, [t_arr], False, (255, 180, 60), 2, cv2.LINE_AA)
 
-        # Ruta global optima (A* / Dijkstra) sobre el mapa acumulado
-        if len(output.navigation.path_cells) >= 2:
-            pts = []
-            for r, c in output.navigation.path_cells:
-                px = int(round((c + 0.5) * sx))
-                py = int(round((rows - 1 - r + 0.5) * sy))
-                pts.append([px, py])
-            pts_arr = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
-            path_col = (
-                (40, 255, 100)
-                if output.navigation.navigation_mode == "EXPLORE_FORWARD"
-                else (80, 220, 255)
-            )
-            cv2.polylines(scaled, [pts_arr], False, path_col, 3, cv2.LINE_AA)
-            cv2.circle(scaled, tuple(pts[-1]), 6, (0, 255, 255), -1)
+        # Dibujar ruta Dijkstra (azul/cian) y ruta A* (verde brillante) simultaneamente
+        if len(output.navigation.dijkstra_path_cells) >= 2:
+            d_pts = [
+                [int(round((c + 0.5) * sx)), int(round((rows - 1 - r + 0.5) * sy))]
+                for r, c in output.navigation.dijkstra_path_cells
+            ]
+            d_arr = np.array(d_pts, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(scaled, [d_arr], False, (255, 190, 50), 5, cv2.LINE_AA)
 
-        # Marcador de la Base (0, 0)
+        if len(output.navigation.astar_path_cells) >= 2:
+            a_pts = [
+                [int(round((c + 0.5) * sx)), int(round((rows - 1 - r + 0.5) * sy))]
+                for r, c in output.navigation.astar_path_cells
+            ]
+            a_arr = np.array(a_pts, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(scaled, [a_arr], False, (40, 255, 100), 2, cv2.LINE_AA)
+            cv2.circle(scaled, tuple(a_pts[-1]), 6, (0, 255, 255), -1)
+
         sr, sc = output.navigation.start_cell
         base_px = int(round((sc + 0.5) * sx))
         base_py = int(round((rows - 1 - sr) * sy))
@@ -238,7 +238,6 @@ class HUDRenderer:
             -1,
         )
 
-        # Marcador de la posicion actual del Dron / Rover
         cr, cc = output.navigation.current_cell
         rover_px = int(round((cc + 0.5) * sx))
         rover_py = int(round((rows - 1 - cr) * sy))
@@ -250,7 +249,7 @@ class HUDRenderer:
 
         cv2.putText(
             panel,
-            f"3. PERSISTENT GLOBAL MAP & {output.navigation.planner_used.upper()} ROUTE",
+            "3. PERSISTENT GLOBAL MAP (A* & DIJKSTRA)",
             (12, 25),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.47,
@@ -262,10 +261,10 @@ class HUDRenderer:
         legend_y = 682
         items = [
             ("EXPLORED", (44, 62, 50)),
-            ("INFLATED", (38, 88, 118)),
             ("BOULDER", (35, 95, 245)),
             ("CREVICE", (240, 200, 25)),
-            ("ROUTE", (40, 255, 100)),
+            ("A*", (40, 255, 100)),
+            ("DIJKSTRA", (255, 190, 50)),
         ]
         lx = 10
         for name, col in items:
@@ -275,7 +274,7 @@ class HUDRenderer:
                 name,
                 (lx + 16, legend_y + 2),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.36,
+                0.35,
                 (200, 210, 220),
                 1,
                 cv2.LINE_AA,
@@ -329,7 +328,7 @@ class HUDRenderer:
             cv2.LINE_AA,
         )
 
-        rx, ry, ryaw = output.rover_pose_xy_yaw
+        rx, ry, _ = output.rover_pose_xy_yaw
         metrics = [
             ("Edge Processing FPS", f"{output.edge_fps:.1f} FPS"),
             ("Camera / Drone Altitude", f"{output.terrain.altitude_m:.2f} m"),
@@ -337,9 +336,11 @@ class HUDRenderer:
             ("Global Pose (X, Y)", f"({rx:+.2f}, {ry:+.2f}) m"),
             ("Traversed Distance", f"{output.traversed_distance_m:.2f} m"),
             ("Explored Map Area", f"{output.navigation.explored_area_m2:.2f} m2"),
-            ("Active Path Planner", output.navigation.planner_used.upper()),
+            (
+                "A* vs Dijkstra Nodes",
+                f"{output.navigation.astar_explored_nodes} vs {output.navigation.dijkstra_explored_nodes}",
+            ),
             ("Mission Nav Mode", output.navigation.navigation_mode),
-            ("Explored Graph Nodes", str(output.navigation.explored_nodes)),
             (
                 "Recommended Heading",
                 f"{output.navigation.recommended_heading_deg:+.1f} deg",
@@ -420,20 +421,20 @@ class HUDRenderer:
         cv2.line(side, (16, ctrl_y - 14), (344, ctrl_y - 14), (40, 50, 65), 1)
         cv2.putText(
             side,
-            "KEYBOARD CONTROLS",
+            "AUTOMATED PIPELINE (OPTIONAL KEYS)",
             (16, ctrl_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.43,
+            0.41,
             (90, 200, 255),
             1,
             cv2.LINE_AA,
         )
         controls = [
-            "[W/A/S/D] Advance / Scout Pose in Map",
-            "[P] Toggle Planner (A* <-> Dijkstra)",
+            "Auto-runs: Filters -> RANSAC -> DBSCAN -> VO -> A*&Dijkstra",
+            "[W/A/S/D] Manual Pose Override (Optional)",
             "[M] Mode (Explore <-> Return to Base)",
-            "[R] Reset Persistent Global Map",
-            "[C] Lock/Unlock Ground  [S] Save  [Q] Quit",
+            "[R] Reset Map  [P] Primary Planner",
+            "[C] Lock Ground  [S] Snapshot  [Q] Quit",
         ]
         cy = ctrl_y + 22
         for c_txt in controls:
@@ -442,7 +443,7 @@ class HUDRenderer:
                 c_txt,
                 (16, cy),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.37,
+                0.35,
                 (180, 195, 210),
                 1,
                 cv2.LINE_AA,

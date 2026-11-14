@@ -17,7 +17,7 @@ from src.visualization.hud import HUDRenderer
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Rover D415 Terrain Analysis & Persistent Global Path Planning (NASA Space Apps 2026)"
+        description="Rover D415 Automated Terrain Analysis & Persistent Global Path Planning"
     )
     parser.add_argument(
         "--source",
@@ -29,7 +29,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--planner",
         choices=["astar", "dijkstra"],
         default="astar",
-        help="Algoritmo de ruta minima sobre la malla de ocupacion 2D acumulada.",
+        help="Algoritmo primario de ruta minima (ambos A* y Dijkstra se calculan automaticamente).",
     )
     parser.add_argument(
         "--pitch",
@@ -53,7 +53,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--frames",
         type=int,
         default=0,
-        help="Numero de frames a procesar (0 = bucle infinito en tiempo real).",
+        help="Numero de frames a procesar (0 = bucle continuo automatizado).",
     )
     parser.add_argument(
         "--headless",
@@ -68,7 +68,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--save-dir",
         default="captures",
-        help="Directorio donde se guardan las capturas del HUD y payloads JSON.",
+        help="Directorio donde se exporta continuamente latest_drone_cv.json y capturas.",
     )
     return parser.parse_args(argv)
 
@@ -82,6 +82,14 @@ def save_capture(hud_img, payload: dict, save_dir: str) -> tuple[str, str]:
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     return img_path, json_path
+
+
+def export_live_telemetry(payload: dict, save_dir: str) -> str:
+    os.makedirs(save_dir, exist_ok=True)
+    latest_path = os.path.join(save_dir, "latest_drone_cv.json")
+    with open(latest_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return latest_path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,10 +128,11 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = TerrainNavigationPipeline(config)
     hud_renderer = HUDRenderer(config)
 
-    window_name = "Rover D415 Persistent Map & Path Planning (NASA Space Apps 2026)"
+    window_name = "Rover D415 Automated Persistent Map & Path Planning (NASA Space Apps 2026)"
     frame_count = 0
     last_hud = None
     last_payload = None
+    last_export_ts = 0.0
 
     try:
         while True:
@@ -138,6 +147,11 @@ def main(argv: list[str] | None = None) -> int:
                 source_name=source_label,
             )
 
+            now = time.time()
+            if now - last_export_ts >= 0.5:
+                export_live_telemetry(last_payload, args.save_dir)
+                last_export_ts = now
+
             frame_count += 1
 
             if not args.headless:
@@ -147,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
                     break
                 elif key == ord("p"):
                     new_p = pipeline.toggle_planner()
-                    print(f"[INFO] Algoritmo de navegacion cambiado a: {new_p.upper()}")
+                    print(f"[INFO] Algoritmo primario cambiado a: {new_p.upper()}")
                 elif key == ord("m"):
                     mode = pipeline.toggle_navigation_mode()
                     print(f"[INFO] Modo de mision cambiado a: {mode}")
@@ -171,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.frames > 0 and frame_count >= args.frames:
                 break
+
+        if last_payload is not None:
+            export_live_telemetry(last_payload, args.save_dir)
 
         if args.save_snapshot and last_hud is not None and last_payload is not None:
             img_p, json_p = save_capture(last_hud, last_payload, args.save_dir)

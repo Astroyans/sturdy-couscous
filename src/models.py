@@ -99,6 +99,10 @@ class NavigationResult:
     cost_grid: np.ndarray
     path_cells: list[tuple[int, int]] = field(default_factory=list)
     path_world_xy: list[tuple[float, float]] = field(default_factory=list)
+    astar_path_cells: list[tuple[int, int]] = field(default_factory=list)
+    dijkstra_path_cells: list[tuple[int, int]] = field(default_factory=list)
+    astar_explored_nodes: int = 0
+    dijkstra_explored_nodes: int = 0
     safe_corridor: bool = True
     recommended_heading_deg: float = 0.0
     planner_used: str = "astar"
