@@ -131,10 +131,11 @@ class GroundPlaneAnalyzer:
         flip = normals[:, 2] < 0
         normals[flip] *= -1.0
 
-        plausible = valid_n & (normals[:, 2] > 0.707)
+        min_nz = 0.15 if self.config.nominal_camera_pitch_deg <= -65.0 else 0.707
+        plausible = valid_n & (normals[:, 2] > min_nz)
         if not np.any(plausible):
             default_normal = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-            d_est = -float(np.median(sample_pts[:, 2]))
+            d_est = abs(float(np.median(sample_pts[:, 2])))
             return default_normal, d_est
 
         cand_normals = normals[plausible]
@@ -154,14 +155,18 @@ class GroundPlaneAnalyzer:
             centered = inlier_pts - centroid
             _, _, vh = np.linalg.svd(centered, full_matrices=False)
             refined_n = vh[-1, :].astype(np.float32)
-            if refined_n[2] < 0:
+            refined_d = -float(np.dot(refined_n, centroid))
+            if refined_d < 0:
                 refined_n = -refined_n
-            if refined_n[2] > 0.707:
-                refined_d = -float(np.dot(refined_n, centroid))
+                refined_d = -refined_d
+            if refined_n[2] > min_nz:
                 return refined_n, refined_d
 
         best_n = cand_normals[best_idx].astype(np.float32)
         best_d = float(cand_d[best_idx])
+        if best_d < 0:
+            best_n = -best_n
+            best_d = -best_d
         return best_n, best_d
 
     def analyze(
@@ -175,7 +180,8 @@ class GroundPlaneAnalyzer:
             depth_m, intrinsics, camera_pitch_deg=camera_pitch_deg
         )
         normal, plane_d = self._fit_plane_ransac(points_3d, valid_mask)
-        if normal[2] <= 0.707:
+        min_nz = 0.15 if self.config.nominal_camera_pitch_deg <= -65.0 else 0.707
+        if normal[2] <= min_nz:
             if self._last_valid_plane is not None:
                 normal, plane_d = self._last_valid_plane
             else:
@@ -191,6 +197,23 @@ class GroundPlaneAnalyzer:
             + plane_d
         ).astype(np.float32)
         height_map_m = np.where(valid_mask, height_map_m, 0.0)
+
+        if self.config.nominal_camera_pitch_deg <= -65.0:
+            up_ref = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            ex = np.cross(up_ref, normal)
+            ex_norm = float(np.linalg.norm(ex))
+            if ex_norm < 1e-4:
+                ex = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            else:
+                ex = ex / ex_norm
+            ey = np.cross(normal, ex)
+            ey = ey / max(float(np.linalg.norm(ey)), 1e-5)
+
+            p_flat = points_3d + plane_d * normal[None, None, :]
+            x_ground = np.sum(p_flat * ex[None, None, :], axis=-1)
+            y_ground = np.sum(p_flat * ey[None, None, :], axis=-1)
+            z_ground = height_map_m - abs(float(plane_d))
+            points_3d = np.stack([x_ground, y_ground, z_ground], axis=-1).astype(np.float32)
 
         nz_clipped = float(np.clip(normal[2], -1.0, 1.0))
         plane_tilt_deg = math.degrees(math.acos(nz_clipped))
@@ -222,11 +245,12 @@ class GroundPlaneAnalyzer:
         eroded_valid = cv2.erode(valid_f.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
         slope_valid = eroded_valid & (~jump_edge)
 
+        base_tilt_deg = 0.0 if self.config.nominal_camera_pitch_deg <= -65.0 else plane_tilt_deg
         extra_slope_deg = np.degrees(np.arctan(grad_mag)) * 0.25
         slope_map_deg = np.where(
             slope_valid,
-            np.clip(plane_tilt_deg + extra_slope_deg, 0.0, 85.0),
-            np.where(valid_mask, plane_tilt_deg, 0.0),
+            np.clip(base_tilt_deg + extra_slope_deg, 0.0, 85.0),
+            np.where(valid_mask, base_tilt_deg, 0.0),
         ).astype(np.float32)
 
         raw_altitude_m = max(0.05, abs(float(plane_d)))
@@ -241,7 +265,7 @@ class GroundPlaneAnalyzer:
         if np.any(ground_inliers):
             max_incline_deg = float(np.percentile(slope_map_deg[ground_inliers], 80))
         else:
-            max_incline_deg = float(plane_tilt_deg)
+            max_incline_deg = float(base_tilt_deg)
 
         return TerrainAnalysis(
             plane_normal=normal,

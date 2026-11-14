@@ -23,13 +23,13 @@ class PipelineConfig:
     max_safe_incline_deg: float = 20.0
     slope_window_size: int = 5
 
-    boulder_min_height_m: float = 0.15
-    crevice_min_depth_m: float = 0.15
-    max_anomaly_magnitude_m: float = 0.65
-    min_cluster_pixels: int = 450
-    min_obstacle_extent_m: float = 0.12
+    boulder_min_height_m: float = 0.08
+    crevice_min_depth_m: float = 0.08
+    max_anomaly_magnitude_m: float = 1.20
+    min_cluster_pixels: int = 320
+    min_obstacle_extent_m: float = 0.09
     use_dbscan: bool = True
-    dbscan_eps_m: float = 0.08
+    dbscan_eps_m: float = 0.22
     dbscan_min_samples: int = 6
     dbscan_max_points: int = 320
 
@@ -44,10 +44,10 @@ class PipelineConfig:
     proximity_penalty_weight: float = 3.5
 
     persistent_mapping: bool = True
-    vo_deadband_m: float = 0.015
+    vo_deadband_m: float = 0.035
     log_odds_hit: float = 0.85
-    log_odds_free: float = -0.30
+    log_odds_free: float = -0.55
     log_odds_min: float = -4.0
     log_odds_max: float = 5.0
     log_odds_occupied_threshold: float = 0.60
-    obstacle_merge_radius_m: float = 0.38
+    obstacle_merge_radius_m: float = 0.40

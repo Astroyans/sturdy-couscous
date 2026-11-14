@@ -30,6 +30,7 @@ class OccupancyGridBuilder:
         self.trajectory_cells: list[tuple[int, int]] = []
         self.global_obstacles: list[Obstacle] = []
         self._next_global_id: int = 1
+        self._frame_counter: int = 0
 
     @property
     def grid_shape(self) -> tuple[int, int]:
@@ -51,6 +52,7 @@ class OccupancyGridBuilder:
         self.trajectory_cells.clear()
         self.global_obstacles.clear()
         self._next_global_id = 1
+        self._frame_counter = 0
 
     def _ensure_capacity_for_pose(self, pose: Pose2D) -> None:
         rows, cols = self._log_odds.shape
@@ -176,6 +178,7 @@ class OccupancyGridBuilder:
     ) -> tuple[np.ndarray, np.ndarray, bool]:
         current_pose = pose or Pose2D()
 
+        self._frame_counter += 1
         if not self.config.persistent_mapping:
             self.reset()
 
@@ -191,16 +194,25 @@ class OccupancyGridBuilder:
         s = max(1, int(self.config.pointcloud_stride))
         pts = terrain.points_3d[::s, ::s]
         valid = terrain.valid_mask[::s, ::s]
+        h_sub = terrain.height_map_m[::s, ::s]
         b_sub = boulder_mask[::s, ::s]
         c_sub = crevice_mask[::s, ::s]
 
         X_local = pts[:, :, 0]
         Y_local = pts[:, :, 1]
+        horiz_r = np.hypot(X_local, Y_local)
+        valid_ratio = float(np.mean(valid))
+        if valid_ratio < 0.25:
+            max_footprint = max(0.40, float(terrain.altitude_m) * 1.6)
+        else:
+            max_footprint = max(2.2, float(terrain.altitude_m) * 2.8)
         X_world, Y_world = self._local_to_world_xy(X_local, Y_local, current_pose)
 
         y_min = self.y_min_m
         in_bounds = (
             valid
+            & (np.abs(h_sub) <= self.config.max_anomaly_magnitude_m)
+            & (horiz_r <= max_footprint)
             & (X_world >= -half_w)
             & (X_world < half_w)
             & (Y_world >= y_min)
@@ -261,7 +273,16 @@ class OccupancyGridBuilder:
 
         # Actualizar registro persistente de obstaculos globales y estamparlos en la malla
         merged_obstacles = self._merge_obstacles_into_global_registry(obstacles, current_pose)
+        if self._frame_counter > 3 and len(self.global_obstacles) > 12:
+            self.global_obstacles = [
+                o for o in self.global_obstacles if o.observations >= 2
+            ][:20]
+            merged_obstacles = self.global_obstacles
+
+        min_obs_confirm = 1 if self._frame_counter <= 2 else 2
         for g_obs in merged_obstacles:
+            if g_obs.observations < min_obs_confirm:
+                continue
             ox, oy = g_obs.world_xy
             if -half_w <= ox < half_w and y_min <= oy < y_min + rows * res:
                 orow, ocol = self.world_to_cell(ox, oy)
@@ -271,7 +292,7 @@ class OccupancyGridBuilder:
                     self._log_odds,
                     (ocol, orow),
                     2,
-                    float(self.config.log_odds_occupied_threshold + 1.0),
+                    float(self.config.log_odds_occupied_threshold + 0.6),
                     thickness=-1,
                 )
                 self._observed[

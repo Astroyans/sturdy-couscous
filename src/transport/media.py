@@ -55,13 +55,15 @@ def render_rgb_annotated(output: PipelineOutput) -> np.ndarray:
         x, y, bw, bh = obs.bbox_2d
         if obs.type == "BOULDER":
             color = (30, 110, 255)
+            tag = "OBJETO"
             metric_str = f"H:{obs.magnitude_m:.2f}m"
         else:
             color = (255, 210, 0)
+            tag = "DESNIVEL"
             metric_str = f"D:{obs.magnitude_m:.2f}m"
 
         cv2.rectangle(rgb, (x, y), (x + bw, y + bh), color, 2)
-        label = f"#{obs.id} {obs.type} {obs.distance_m:.2f}m {metric_str}"
+        label = f"#{obs.id} {tag} {obs.distance_m:.2f}m {metric_str}"
         ty = max(18, y - 6)
         cv2.rectangle(
             rgb,
@@ -213,9 +215,9 @@ def render_route_map(
 
     legend_y = height - 12
     items = [
-        ("FREE", (44, 62, 50)),
-        ("BOULDER", (35, 95, 245)),
-        ("CREVICE", (240, 200, 25)),
+        ("SUELO", (44, 62, 50)),
+        ("OBJETO", (35, 95, 245)),
+        ("DESNIVEL", (240, 200, 25)),
         ("A*", (40, 255, 100)),
         ("DIJKSTRA", (255, 190, 50)),
     ]

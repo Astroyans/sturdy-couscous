@@ -80,13 +80,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--boulder-min-height",
         type=float,
-        default=0.15,
+        default=0.08,
         help="Altura minima en metros sobre el suelo para clasificar BOULDER.",
     )
     parser.add_argument(
         "--crevice-min-depth",
         type=float,
-        default=0.15,
+        default=0.08,
         help="Profundidad minima en metros bajo el suelo para clasificar CREVICE.",
     )
     parser.add_argument(

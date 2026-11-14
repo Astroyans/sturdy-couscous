@@ -103,19 +103,112 @@ class ObstacleDetector:
 
         return raw_clusters
 
+    @staticmethod
+    def _merge_nearby_obstacles(
+        obstacles: list[Obstacle],
+        px_gap: int = 28,
+        dist_3d_max: float = 0.45,
+    ) -> list[Obstacle]:
+        merged: list[Obstacle] = []
+        for obs in obstacles:
+            ox, oy, ow, oh = obs.bbox_2d
+            ox1, oy1 = ox + ow, oy + oh
+            found = False
+            for idx, m in enumerate(merged):
+                if m.type != obs.type:
+                    continue
+                mx, my, mw, mh = m.bbox_2d
+                mx1, my1 = mx + mw, my + mh
+                overlap_x = (ox - px_gap <= mx1) and (mx - px_gap <= ox1)
+                overlap_y = (oy - px_gap <= my1) and (my - px_gap <= oy1)
+                d3 = math.hypot(
+                    obs.centroid_3d[0] - m.centroid_3d[0],
+                    obs.centroid_3d[1] - m.centroid_3d[1],
+                )
+                if overlap_x and overlap_y and d3 <= dist_3d_max:
+                    nx0, ny0 = min(ox, mx), min(oy, my)
+                    nx1, ny1 = max(ox1, mx1), max(oy1, my1)
+                    tot_px = m.pixel_count + obs.pixel_count
+                    w_m = m.pixel_count / max(tot_px, 1)
+                    w_o = obs.pixel_count / max(tot_px, 1)
+                    cx = m.centroid_3d[0] * w_m + obs.centroid_3d[0] * w_o
+                    cy = m.centroid_3d[1] * w_m + obs.centroid_3d[1] * w_o
+                    cz = m.centroid_3d[2] * w_m + obs.centroid_3d[2] * w_o
+                    dist_m = math.hypot(cx, cy)
+                    bearing_deg = math.degrees(math.atan2(cx, max(cy, 1e-4)))
+                    merged[idx] = Obstacle(
+                        id=0,
+                        type=m.type,
+                        distance_m=dist_m,
+                        bearing_deg=bearing_deg,
+                        magnitude_m=max(m.magnitude_m, obs.magnitude_m),
+                        bbox_2d=(nx0, ny0, nx1 - nx0, ny1 - ny0),
+                        centroid_3d=(cx, cy, cz),
+                        pixel_count=tot_px,
+                    )
+                    found = True
+                    break
+            if not found:
+                merged.append(obs)
+        return merged
+
     def detect(
         self,
         terrain: TerrainAnalysis,
     ) -> tuple[list[Obstacle], np.ndarray, np.ndarray]:
+        h, w = terrain.valid_mask.shape
+        interior = np.ones((h, w), dtype=bool)
+        margin = 16 if (h >= 120 and w >= 160) else 4
+        interior[:margin, :] = False
+        interior[-margin:, :] = False
+        interior[:, :margin] = False
+        interior[:, -margin:] = False
+
+        eroded_valid = (
+            cv2.erode(
+                terrain.valid_mask.astype(np.uint8),
+                np.ones((7, 7), dtype=np.uint8),
+            )
+            > 0
+        )
+        num_v, v_labels, v_stats, _ = cv2.connectedComponentsWithStats(
+            eroded_valid.astype(np.uint8), connectivity=8
+        )
+        min_valid_island = max(150, int(h * w * 0.012))
+        contiguous_valid = np.zeros((h, w), dtype=bool)
+        for v_lbl in range(1, num_v):
+            if int(v_stats[v_lbl, cv2.CC_STAT_AREA]) >= min_valid_island:
+                contiguous_valid |= v_labels == v_lbl
+
+        depth_f32 = terrain.height_map_m.astype(np.float32)
+        k3 = np.ones((3, 3), dtype=np.uint8)
+        local_jump_m = cv2.dilate(depth_f32, k3) - cv2.erode(depth_f32, k3)
+        smooth_depth = local_jump_m <= 0.18
+
+        base_valid = terrain.valid_mask & interior
+        valid_ratio = float(np.mean(terrain.valid_mask))
+        max_crevice_depth = min(
+            self.config.max_anomaly_magnitude_m,
+            max(0.35, float(terrain.altitude_m) * 0.85),
+        )
+
+        max_footprint = max(2.2, float(terrain.altitude_m) * 2.8)
+
         raw_boulder = (
-            terrain.valid_mask
+            base_valid
+            & contiguous_valid
+            & smooth_depth
+            & (valid_ratio >= 0.25)
             & (terrain.height_map_m >= self.config.boulder_min_height_m)
             & (terrain.height_map_m <= self.config.max_anomaly_magnitude_m)
         )
         raw_crevice = (
-            terrain.valid_mask
+            base_valid
+            & contiguous_valid
+            & smooth_depth
+            & (valid_ratio >= 0.25)
             & (terrain.height_map_m <= -self.config.crevice_min_depth_m)
-            & (terrain.height_map_m >= -self.config.max_anomaly_magnitude_m)
+            & (terrain.height_map_m >= -max_crevice_depth)
         )
 
         boulder_mask = clean_binary_mask(
@@ -147,11 +240,15 @@ class ObstacleDetector:
             if extent_xy < self.config.min_obstacle_extent_m:
                 continue
 
+            q75, q25 = np.percentile(heights, [75, 25])
+            if float(q75 - q25) > 0.35:
+                continue
+
             centroid = np.median(pts, axis=0)
             cx, cy, cz = float(centroid[0]), float(centroid[1]), float(centroid[2])
 
             distance_m = math.sqrt(cx * cx + cy * cy)
-            if distance_m < 0.10 or distance_m > self.config.max_depth_m:
+            if distance_m < 0.10 or distance_m > min(self.config.max_depth_m, max_footprint):
                 continue
 
             bearing_deg = math.degrees(math.atan2(cx, max(cy, 1e-4)))
@@ -174,8 +271,12 @@ class ObstacleDetector:
                 )
             )
 
+        unsorted_obstacles = self._merge_nearby_obstacles(unsorted_obstacles)
         unsorted_obstacles.sort(key=lambda o: o.distance_m)
         obstacles: list[Obstacle] = []
+        final_boulder_mask = np.zeros_like(boulder_mask, dtype=bool)
+        final_crevice_mask = np.zeros_like(crevice_mask, dtype=bool)
+
         for idx, obs in enumerate(unsorted_obstacles, start=1):
             obstacles.append(
                 Obstacle(
@@ -189,5 +290,14 @@ class ObstacleDetector:
                     pixel_count=obs.pixel_count,
                 )
             )
+            bx, by, bw, bh = obs.bbox_2d
+            x0 = max(0, bx)
+            y0 = max(0, by)
+            x1 = min(w, bx + bw)
+            y1 = min(h, by + bh)
+            if obs.type == "BOULDER":
+                final_boulder_mask[y0:y1, x0:x1] |= boulder_mask[y0:y1, x0:x1]
+            else:
+                final_crevice_mask[y0:y1, x0:x1] |= crevice_mask[y0:y1, x0:x1]
 
-        return obstacles, boulder_mask, crevice_mask
+        return obstacles, final_boulder_mask, final_crevice_mask

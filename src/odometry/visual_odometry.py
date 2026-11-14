@@ -106,19 +106,23 @@ class RGBDVisualOdometry:
                     pts0 = self._prev_pts_3d[v0[both_valid], u0[both_valid], :2]
                     pts1 = points_3d[v1[both_valid], u1[both_valid], :2]
 
-                    # Si la camara avanza +dY, los objetos estaticos parecen moverse -dY en el marco camara
                     deltas = pts0 - pts1
                     norms = np.linalg.norm(deltas, axis=1)
-                    inlier_flow = norms < 0.35
+                    inlier_flow = norms < 0.20
 
-                    if int(np.sum(inlier_flow)) >= 8:
-                        med_delta = np.median(deltas[inlier_flow], axis=0)
+                    if int(np.sum(inlier_flow)) >= 18:
+                        inlier_deltas = deltas[inlier_flow]
+                        med_delta = np.median(inlier_deltas, axis=0)
+                        spread = float(np.max(np.std(inlier_deltas, axis=0)))
                         dx_local = float(med_delta[0])
                         dy_local = float(med_delta[1])
                         step_norm = math.hypot(dx_local, dy_local)
 
-                        # Zona muerta anti-vibracion cuando la camara esta quieta en la mesa
-                        if step_norm >= self.config.vo_deadband_m:
+                        # Zona muerta anti-vibracion y rechazo de rotacion pura de mano
+                        if (
+                            self.config.vo_deadband_m <= step_norm <= 0.16
+                            and spread < 0.065
+                        ):
                             self.apply_manual_step(
                                 dx_local_m=dx_local,
                                 dy_local_m=dy_local,

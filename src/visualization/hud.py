@@ -80,13 +80,15 @@ class HUDRenderer:
             x, y, bw, bh = obs.bbox_2d
             if obs.type == "BOULDER":
                 color = (30, 110, 255)
+                tag = "OBJETO"
                 metric_str = f"H:{obs.magnitude_m:.2f}m"
             else:
                 color = (255, 210, 0)
+                tag = "DESNIVEL"
                 metric_str = f"D:{obs.magnitude_m:.2f}m"
 
             cv2.rectangle(rgb, (x, y), (x + bw, y + bh), color, 2)
-            label = f"#{obs.id} {obs.type} {obs.distance_m:.2f}m {obs.bearing_deg:+.0f}deg {metric_str}"
+            label = f"#{obs.id} {tag} {obs.distance_m:.2f}m {metric_str}"
             ty = max(18, y - 6)
             cv2.rectangle(
                 rgb,
@@ -267,13 +269,13 @@ class HUDRenderer:
 
         legend_y = 682
         items = [
-            ("EXPLORED", (44, 62, 50)),
-            ("BOULDER", (35, 95, 245)),
-            ("CREVICE", (240, 200, 25)),
+            ("SUELO", (44, 62, 50)),
+            ("OBJETO", (35, 95, 245)),
+            ("DESNIVEL", (240, 200, 25)),
             ("A*", (40, 255, 100)),
             ("DIJKSTRA", (255, 190, 50)),
         ]
-        lx = 10
+        lx = 12
         for name, col in items:
             cv2.rectangle(panel, (lx, legend_y - 10), (lx + 13, legend_y + 4), col, -1)
             cv2.putText(
@@ -286,7 +288,7 @@ class HUDRenderer:
                 1,
                 cv2.LINE_AA,
             )
-            lx += 85
+            lx += 28 + len(name) * 7
 
         return panel
 
@@ -379,10 +381,15 @@ class HUDRenderer:
             )
             y += 23
 
+        live_obs_list = (
+            output.frame_obstacles
+            if output.frame_obstacles is not None
+            else output.obstacles
+        )
         cv2.line(side, (16, y - 8), (344, y - 8), (40, 50, 65), 1)
         cv2.putText(
             side,
-            "PERSISTENT OBSTACLES (drone_cv)",
+            "LIVE OBJECTS & DESNIVELES (drone_cv)",
             (16, y + 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.44,
@@ -392,10 +399,10 @@ class HUDRenderer:
         )
         y += 30
 
-        if not output.obstacles:
+        if not live_obs_list:
             cv2.putText(
                 side,
-                "No topographical anomalies detected",
+                "Flat terrain - no objects or drops in view",
                 (16, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.39,
@@ -405,11 +412,12 @@ class HUDRenderer:
             )
             y += 22
         else:
-            for obs in output.obstacles[:5]:
+            for obs in live_obs_list[:5]:
                 col = (50, 130, 255) if obs.type == "BOULDER" else (255, 210, 40)
+                tag = "OBJETO" if obs.type == "BOULDER" else "DESNIVEL"
                 dim_key = "H" if obs.type == "BOULDER" else "D"
                 line = (
-                    f"#{obs.id} {obs.type:<7} d={obs.distance_m:.2f}m "
+                    f"#{obs.id} {tag:<8} d={obs.distance_m:.2f}m "
                     f"ang={obs.bearing_deg:+.1f}deg {dim_key}={obs.magnitude_m:.2f}m"
                 )
                 cv2.putText(
