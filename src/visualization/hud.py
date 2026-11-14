@@ -25,22 +25,32 @@ class HUDRenderer:
 
     def _project_world_to_pixel(
         self,
-        x_m: float,
-        y_m: float,
+        wx_m: float,
+        wy_m: float,
         z_m: float,
         output: PipelineOutput,
     ) -> Optional[tuple[int, int]]:
+        rx, ry, ryaw_deg = output.rover_pose_xy_yaw
+        yaw_rad = math.radians(ryaw_deg)
+        cos_y = math.cos(yaw_rad)
+        sin_y = math.sin(yaw_rad)
+
+        dx_w = wx_m - rx
+        dy_w = wy_m - ry
+        x_local = dx_w * cos_y - dy_w * sin_y
+        y_local = dx_w * sin_y + dy_w * cos_y
+
         pitch_rad = math.radians(output.frame.imu_pitch)
         cos_p = math.cos(pitch_rad)
         sin_p = math.sin(pitch_rad)
 
-        z_cam = y_m * cos_p + z_m * sin_p
-        y_up_cam = -y_m * sin_p + z_m * cos_p
+        z_cam = y_local * cos_p + z_m * sin_p
+        y_up_cam = -y_local * sin_p + z_m * cos_p
         if z_cam <= 0.15:
             return None
 
         intr = output.frame.intrinsics
-        u = int(round((x_m / z_cam) * intr.fx + intr.ppx))
+        u = int(round((x_local / z_cam) * intr.fx + intr.ppx))
         v = int(round((-y_up_cam / z_cam) * intr.fy + intr.ppy))
         if 0 <= u < intr.width and 0 <= v < intr.height:
             return (u, v)
@@ -53,8 +63,6 @@ class HUDRenderer:
         ground_z = -output.terrain.altitude_m
         projected_pts: list[tuple[int, int]] = []
         for wx, wy in output.navigation.path_world_xy:
-            if wy < 0.25:
-                continue
             uv = self._project_world_to_pixel(wx, wy, ground_z, output)
             if uv is not None:
                 projected_pts.append(uv)
@@ -168,26 +176,41 @@ class HUDRenderer:
         sx = map_w / float(cols)
         sy = map_h / float(rows)
         res = self.config.grid_resolution_m
+        max_y_m = rows * res
 
-        for dist_m in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0):
-            r = int(round(dist_m / res))
+        step_m = 1.0 if max_y_m > 4.0 else 0.5
+        d_m = step_m
+        while d_m < max_y_m:
+            r = int(round(d_m / res))
             if 0 < r < rows:
                 py = int(round((rows - 1 - r) * sy))
                 cv2.line(scaled, (0, py), (map_w, py), (60, 75, 65), 1)
                 cv2.putText(
                     scaled,
-                    f"{dist_m:.1f}m",
+                    f"{d_m:.1f}m",
                     (6, max(12, py - 4)),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.36,
+                    0.35,
                     (150, 175, 160),
                     1,
                     cv2.LINE_AA,
                 )
+            d_m += step_m
 
         cx_px = int(round((cols / 2.0) * sx))
         cv2.line(scaled, (cx_px, 0), (cx_px, map_h), (65, 80, 70), 1)
 
+        # Traza historica del recorrido del Dron/Rover
+        if len(output.navigation.trajectory_cells) >= 2:
+            t_pts = []
+            for r, c in output.navigation.trajectory_cells:
+                px = int(round((c + 0.5) * sx))
+                py = int(round((rows - 1 - r + 0.5) * sy))
+                t_pts.append([px, py])
+            t_arr = np.array(t_pts, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(scaled, [t_arr], False, (255, 180, 60), 2, cv2.LINE_AA)
+
+        # Ruta global optima (A* / Dijkstra) sobre el mapa acumulado
         if len(output.navigation.path_cells) >= 2:
             pts = []
             for r, c in output.navigation.path_cells:
@@ -195,12 +218,30 @@ class HUDRenderer:
                 py = int(round((rows - 1 - r + 0.5) * sy))
                 pts.append([px, py])
             pts_arr = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(scaled, [pts_arr], False, (40, 255, 100), 3, cv2.LINE_AA)
+            path_col = (
+                (40, 255, 100)
+                if output.navigation.navigation_mode == "EXPLORE_FORWARD"
+                else (80, 220, 255)
+            )
+            cv2.polylines(scaled, [pts_arr], False, path_col, 3, cv2.LINE_AA)
             cv2.circle(scaled, tuple(pts[-1]), 6, (0, 255, 255), -1)
 
+        # Marcador de la Base (0, 0)
         sr, sc = output.navigation.start_cell
-        rover_px = int(round((sc + 0.5) * sx))
-        rover_py = int(round((rows - 1 - sr) * sy))
+        base_px = int(round((sc + 0.5) * sx))
+        base_py = int(round((rows - 1 - sr) * sy))
+        cv2.rectangle(
+            scaled,
+            (base_px - 6, base_py - 6),
+            (base_px + 6, base_py + 6),
+            (220, 220, 220),
+            -1,
+        )
+
+        # Marcador de la posicion actual del Dron / Rover
+        cr, cc = output.navigation.current_cell
+        rover_px = int(round((cc + 0.5) * sx))
+        rover_py = int(round((rows - 1 - cr) * sy))
         cv2.circle(scaled, (rover_px, rover_py), 8, (255, 255, 255), -1)
         cv2.circle(scaled, (rover_px, rover_py), 5, (0, 180, 255), -1)
 
@@ -209,10 +250,10 @@ class HUDRenderer:
 
         cv2.putText(
             panel,
-            f"3. 2D OCCUPANCY GRID & {output.navigation.planner_used.upper()} PATH",
+            f"3. PERSISTENT GLOBAL MAP & {output.navigation.planner_used.upper()} ROUTE",
             (12, 25),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.50,
+            0.47,
             (220, 230, 245),
             1,
             cv2.LINE_AA,
@@ -220,26 +261,26 @@ class HUDRenderer:
 
         legend_y = 682
         items = [
-            ("FREE", (44, 62, 50)),
+            ("EXPLORED", (44, 62, 50)),
             ("INFLATED", (38, 88, 118)),
             ("BOULDER", (35, 95, 245)),
             ("CREVICE", (240, 200, 25)),
-            ("PATH", (40, 255, 100)),
+            ("ROUTE", (40, 255, 100)),
         ]
-        lx = 12
+        lx = 10
         for name, col in items:
-            cv2.rectangle(panel, (lx, legend_y - 10), (lx + 14, legend_y + 4), col, -1)
+            cv2.rectangle(panel, (lx, legend_y - 10), (lx + 13, legend_y + 4), col, -1)
             cv2.putText(
                 panel,
                 name,
-                (lx + 18, legend_y + 2),
+                (lx + 16, legend_y + 2),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.38,
+                0.36,
                 (200, 210, 220),
                 1,
                 cv2.LINE_AA,
             )
-            lx += 84
+            lx += 85
 
         return panel
 
@@ -255,9 +296,9 @@ class HUDRenderer:
         cv2.putText(
             side,
             "ROVER D415 TELEMETRY",
-            (16, 30),
+            (16, 28),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
+            0.60,
             (90, 200, 255),
             2,
             cv2.LINE_AA,
@@ -265,9 +306,9 @@ class HUDRenderer:
         cv2.putText(
             side,
             f"Source: {source_name[:34]}",
-            (16, 52),
+            (16, 48),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.40,
+            0.39,
             (160, 175, 195),
             1,
             cv2.LINE_AA,
@@ -276,47 +317,44 @@ class HUDRenderer:
         corridor_ok = output.navigation.safe_corridor
         status_text = "SAFE CORRIDOR: TRUE" if corridor_ok else "SAFE CORRIDOR: FALSE"
         status_bg = (25, 110, 50) if corridor_ok else (30, 45, 180)
-        cv2.rectangle(side, (16, 66), (344, 104), status_bg, -1)
+        cv2.rectangle(side, (16, 60), (344, 94), status_bg, -1)
         cv2.putText(
             side,
             status_text,
-            (28, 91),
+            (28, 83),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.58,
+            0.55,
             (255, 255, 255),
             2,
             cv2.LINE_AA,
         )
 
+        rx, ry, ryaw = output.rover_pose_xy_yaw
         metrics = [
             ("Edge Processing FPS", f"{output.edge_fps:.1f} FPS"),
-            ("Camera / Rover Altitude", f"{output.terrain.altitude_m:.2f} m"),
+            ("Camera / Drone Altitude", f"{output.terrain.altitude_m:.2f} m"),
             ("Max Terrain Incline", f"{output.terrain.max_incline_deg:.1f} deg"),
-            (
-                "Ground Pitch / Roll",
-                f"{output.terrain.pitch_deg:+.1f} / {output.terrain.roll_deg:+.1f} deg",
-            ),
-            (
-                "Ground Plane Mode",
-                "LOCKED (Manual Ref)" if plane_locked else "RANSAC Dynamic",
-            ),
+            ("Global Pose (X, Y)", f"({rx:+.2f}, {ry:+.2f}) m"),
+            ("Traversed Distance", f"{output.traversed_distance_m:.2f} m"),
+            ("Explored Map Area", f"{output.navigation.explored_area_m2:.2f} m2"),
             ("Active Path Planner", output.navigation.planner_used.upper()),
+            ("Mission Nav Mode", output.navigation.navigation_mode),
             ("Explored Graph Nodes", str(output.navigation.explored_nodes)),
             (
                 "Recommended Heading",
                 f"{output.navigation.recommended_heading_deg:+.1f} deg",
             ),
-            ("Detected Obstacles", str(len(output.obstacles))),
+            ("Persistent Obstacles", str(len(output.obstacles))),
         ]
 
-        y = 132
+        y = 118
         for k, v in metrics:
             cv2.putText(
                 side,
                 k,
                 (16, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.42,
+                0.39,
                 (155, 170, 190),
                 1,
                 cv2.LINE_AA,
@@ -324,27 +362,27 @@ class HUDRenderer:
             cv2.putText(
                 side,
                 v,
-                (205, y),
+                (198, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.44,
+                0.40,
                 (235, 245, 255),
                 1,
                 cv2.LINE_AA,
             )
-            y += 28
+            y += 23
 
-        cv2.line(side, (16, y - 10), (344, y - 10), (40, 50, 65), 1)
+        cv2.line(side, (16, y - 8), (344, y - 8), (40, 50, 65), 1)
         cv2.putText(
             side,
-            "DETECTED OBSTACLES (drone_cv)",
-            (16, y + 12),
+            "PERSISTENT OBSTACLES (drone_cv)",
+            (16, y + 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.46,
+            0.44,
             (90, 200, 255),
             1,
             cv2.LINE_AA,
         )
-        y += 36
+        y += 30
 
         if not output.obstacles:
             cv2.putText(
@@ -352,14 +390,14 @@ class HUDRenderer:
                 "No topographical anomalies detected",
                 (16, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.40,
+                0.39,
                 (120, 140, 130),
                 1,
                 cv2.LINE_AA,
             )
-            y += 24
+            y += 22
         else:
-            for obs in output.obstacles[:6]:
+            for obs in output.obstacles[:5]:
                 col = (50, 130, 255) if obs.type == "BOULDER" else (255, 210, 40)
                 dim_key = "H" if obs.type == "BOULDER" else "D"
                 line = (
@@ -371,44 +409,45 @@ class HUDRenderer:
                     line,
                     (16, y),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.37,
+                    0.36,
                     col,
                     1,
                     cv2.LINE_AA,
                 )
-                y += 24
+                y += 21
 
-        ctrl_y = 585
-        cv2.line(side, (16, ctrl_y - 16), (344, ctrl_y - 16), (40, 50, 65), 1)
+        ctrl_y = 562
+        cv2.line(side, (16, ctrl_y - 14), (344, ctrl_y - 14), (40, 50, 65), 1)
         cv2.putText(
             side,
             "KEYBOARD CONTROLS",
             (16, ctrl_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
+            0.43,
             (90, 200, 255),
             1,
             cv2.LINE_AA,
         )
         controls = [
+            "[W/A/S/D] Advance / Scout Pose in Map",
             "[P] Toggle Planner (A* <-> Dijkstra)",
-            "[C] Lock / Unlock Ground Plane Ref",
-            "[S] Save HUD Image & JSON Snapshot",
-            "[Q / ESC] Exit Application",
+            "[M] Mode (Explore <-> Return to Base)",
+            "[R] Reset Persistent Global Map",
+            "[C] Lock/Unlock Ground  [S] Save  [Q] Quit",
         ]
-        cy = ctrl_y + 24
+        cy = ctrl_y + 22
         for c_txt in controls:
             cv2.putText(
                 side,
                 c_txt,
                 (16, cy),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.39,
+                0.37,
                 (180, 195, 210),
                 1,
                 cv2.LINE_AA,
             )
-            cy += 22
+            cy += 21
 
         return side
 

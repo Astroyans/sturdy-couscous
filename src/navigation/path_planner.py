@@ -10,10 +10,13 @@ from src.config import PipelineConfig
 from src.models import (
     GRID_BOULDER,
     GRID_CREVICE,
+    GRID_FREE,
     GRID_STEEP,
+    GRID_UNKNOWN,
     NavigationResult,
 )
 from src.navigation.occupancy_grid import OccupancyGridBuilder
+from src.odometry.visual_odometry import Pose2D
 
 
 class PathPlanner:
@@ -28,44 +31,50 @@ class PathPlanner:
         (-1, 1, math.sqrt(2.0)),
     )
 
-    def __init__(self, config: Optional[PipelineConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[PipelineConfig] = None,
+        grid_builder: Optional[OccupancyGridBuilder] = None,
+    ) -> None:
         self.config = config or PipelineConfig()
-        self.grid_builder = OccupancyGridBuilder(self.config)
+        self.grid_builder = grid_builder or OccupancyGridBuilder(self.config)
 
     @staticmethod
     def _is_blocked(cell_value: int) -> bool:
         return cell_value in (GRID_BOULDER, GRID_CREVICE, GRID_STEEP)
 
-    def _select_goal_cell(self, grid: np.ndarray, start_col: int) -> tuple[int, int]:
+    def _select_frontier_goal_cell(
+        self,
+        grid: np.ndarray,
+        preferred_col: int,
+        min_row: int = 0,
+    ) -> tuple[int, int]:
         rows, cols = grid.shape
-        for r in range(rows - 2, 1, -1):
+        # Buscar la frontera explorada (GRID_FREE) mas lejana hacia adelante
+        for r in range(rows - 2, max(1, min_row), -1):
             for offset in range(cols // 2):
-                for c in (start_col - offset, start_col + offset):
-                    if 0 <= c < cols and not self._is_blocked(int(grid[r, c])):
-                        if int(grid[r, c]) == 0:
-                            return (r, c)
-            for offset in range(cols // 2):
-                for c in (start_col - offset, start_col + offset):
-                    if 0 <= c < cols and not self._is_blocked(int(grid[r, c])):
+                for c in (preferred_col - offset, preferred_col + offset):
+                    if 0 <= c < cols and int(grid[r, c]) == GRID_FREE:
                         return (r, c)
-        return (0, start_col)
+            for offset in range(cols // 2):
+                for c in (preferred_col - offset, preferred_col + offset):
+                    if (
+                        0 <= c < cols
+                        and int(grid[r, c]) != GRID_UNKNOWN
+                        and not self._is_blocked(int(grid[r, c]))
+                    ):
+                        return (r, c)
+        return (min_row, preferred_col)
 
-    def plan(
+    def _run_search(
         self,
         occupancy_grid: np.ndarray,
         cost_grid: np.ndarray,
-        safe_corridor: bool,
-        algorithm: Optional[str] = None,
-    ) -> NavigationResult:
-        planner_name = (algorithm or self.config.default_planner).lower().strip()
-        if planner_name not in ("astar", "dijkstra"):
-            planner_name = "astar"
-
+        start: tuple[int, int],
+        goal: tuple[int, int],
+        use_heuristic: bool,
+    ) -> tuple[list[tuple[int, int]], int, tuple[int, int]]:
         rows, cols = occupancy_grid.shape
-        start = (0, cols // 2)
-        goal = self._select_goal_cell(occupancy_grid, start[1])
-
-        use_heuristic = planner_name == "astar"
         g_score = np.full((rows, cols), np.inf, dtype=np.float64)
         g_score[start] = 0.0
 
@@ -111,10 +120,7 @@ class PathPlanner:
                 if tentative_g < g_score[nr, nc]:
                     g_score[nr, nc] = tentative_g
                     came_from[(nr, nc)] = (r, c)
-                    if use_heuristic:
-                        h = math.hypot(goal[0] - nr, goal[1] - nc)
-                    else:
-                        h = 0.0
+                    h = math.hypot(goal[0] - nr, goal[1] - nc) if use_heuristic else 0.0
                     heapq.heappush(open_heap, (tentative_g + h, nr, nc))
 
         path_cells: list[tuple[int, int]] = []
@@ -124,6 +130,54 @@ class PathPlanner:
             curr = came_from[curr]
         path_cells.append(start)
         path_cells.reverse()
+        return path_cells, explored, best_reached
+
+    def plan(
+        self,
+        occupancy_grid: np.ndarray,
+        cost_grid: np.ndarray,
+        safe_corridor: bool,
+        algorithm: Optional[str] = None,
+        pose: Optional[Pose2D] = None,
+        navigation_mode: str = "EXPLORE_FORWARD",
+    ) -> NavigationResult:
+        planner_name = (algorithm or self.config.default_planner).lower().strip()
+        if planner_name not in ("astar", "dijkstra"):
+            planner_name = "astar"
+
+        rows, cols = occupancy_grid.shape
+        base_cell = (0, cols // 2)
+        current_pose = pose or Pose2D()
+        current_cell = self.grid_builder.world_to_cell(current_pose.x_m, current_pose.y_m)
+
+        use_heuristic = planner_name == "astar"
+
+        if navigation_mode == "RETURN_TO_BASE":
+            # Modo Contingencia EVA: planifica desde la posicion actual (o frontera) de regreso a la Base (0,0)
+            start_search = current_cell if current_cell != base_cell else self._select_frontier_goal_cell(occupancy_grid, base_cell[1])
+            goal_search = base_cell
+            path_cells, explored, reached = self._run_search(
+                occupancy_grid, cost_grid, start_search, goal_search, use_heuristic
+            )
+        else:
+            # Modo Exploracion Acumulativa: traza la ruta global sobre todo el mapa acumulado
+            # pasando desde la base / posicion actual hacia la frontera segura mas lejana
+            frontier_goal = self._select_frontier_goal_cell(
+                occupancy_grid, current_cell[1], min_row=current_cell[0]
+            )
+            if current_cell != base_cell:
+                path_base_to_curr, exp1, _ = self._run_search(
+                    occupancy_grid, cost_grid, base_cell, current_cell, use_heuristic
+                )
+                path_curr_to_goal, exp2, reached = self._run_search(
+                    occupancy_grid, cost_grid, current_cell, frontier_goal, use_heuristic
+                )
+                path_cells = path_base_to_curr[:-1] + path_curr_to_goal
+                explored = exp1 + exp2
+            else:
+                path_cells, explored, reached = self._run_search(
+                    occupancy_grid, cost_grid, base_cell, frontier_goal, use_heuristic
+                )
 
         path_world_xy = [
             self.grid_builder.cell_to_world(r, c) for (r, c) in path_cells
@@ -131,10 +185,23 @@ class PathPlanner:
 
         recommended_heading_deg = 0.0
         if len(path_world_xy) >= 2:
-            lookahead_pt = path_world_xy[min(len(path_world_xy) - 1, 18)]
+            # Buscar waypoint adelante de la posicion actual
+            ahead_pts = [
+                (wx, wy)
+                for (wx, wy) in path_world_xy
+                if math.hypot(wx - current_pose.x_m, wy - current_pose.y_m) >= 0.60
+            ]
+            target_wx, target_wy = ahead_pts[0] if ahead_pts else path_world_xy[-1]
             recommended_heading_deg = math.degrees(
-                math.atan2(lookahead_pt[0], max(lookahead_pt[1], 1e-3))
+                math.atan2(
+                    target_wx - current_pose.x_m,
+                    max(target_wy - current_pose.y_m, 1e-3),
+                )
             )
+
+        res = self.config.grid_resolution_m
+        explored_cells = int(np.sum(occupancy_grid != GRID_UNKNOWN))
+        explored_area_m2 = explored_cells * (res * res)
 
         return NavigationResult(
             occupancy_grid=occupancy_grid,
@@ -145,6 +212,11 @@ class PathPlanner:
             recommended_heading_deg=recommended_heading_deg,
             planner_used=planner_name,
             explored_nodes=explored,
-            start_cell=start,
-            goal_cell=best_reached,
+            start_cell=base_cell,
+            current_cell=current_cell,
+            goal_cell=reached,
+            trajectory_cells=list(self.grid_builder.trajectory_cells),
+            explored_area_m2=explored_area_m2,
+            total_Persistent_obstacles=len(self.grid_builder.global_obstacles),
+            navigation_mode=navigation_mode,
         )

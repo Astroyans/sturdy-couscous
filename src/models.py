@@ -62,6 +62,8 @@ class Obstacle:
     bbox_2d: tuple[int, int, int, int]
     centroid_3d: tuple[float, float, float]
     pixel_count: int = 0
+    world_xy: tuple[float, float] = (0.0, 0.0)
+    observations: int = 1
 
     def to_contract_dict(self) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -102,7 +104,12 @@ class NavigationResult:
     planner_used: str = "astar"
     explored_nodes: int = 0
     start_cell: tuple[int, int] = (0, 0)
+    current_cell: tuple[int, int] = (0, 0)
     goal_cell: tuple[int, int] = (0, 0)
+    trajectory_cells: list[tuple[int, int]] = field(default_factory=list)
+    explored_area_m2: float = 0.0
+    total_Persistent_obstacles: int = 0
+    navigation_mode: str = "EXPLORE_FORWARD"
 
 
 @dataclass
@@ -113,6 +120,8 @@ class PipelineOutput:
     obstacles: list[Obstacle]
     navigation: NavigationResult
     edge_fps: float
+    rover_pose_xy_yaw: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    traversed_distance_m: float = 0.0
 
     def to_drone_cv_payload(self, node_name: str = "drone_cv") -> dict[str, Any]:
         ts = int(self.frame.timestamp) if self.frame.timestamp > 0 else int(time.time())
@@ -122,7 +131,7 @@ class PipelineOutput:
             "data": {
                 "altitude_m": round(float(self.terrain.altitude_m), 2),
                 "imu": {
-                    "yaw": round(float(self.frame.imu_yaw), 1),
+                    "yaw": round(float(self.frame.imu_yaw + self.rover_pose_xy_yaw[2]), 1),
                     "pitch": round(float(self.terrain.pitch_deg), 1),
                     "roll": round(float(self.terrain.roll_deg), 1),
                 },

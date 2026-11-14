@@ -32,11 +32,20 @@ class PipelineConfig:
     dbscan_min_samples: int = 10
     dbscan_max_points: int = 1500
 
-    grid_width_m: float = 3.00
-    grid_depth_m: float = 3.50
+    grid_width_m: float = 4.00
+    grid_depth_m: float = 6.00
     grid_resolution_m: float = 0.05
     robot_radius_m: float = 0.15
     corridor_half_width_m: float = 0.25
     corridor_check_distance_m: float = 1.80
     default_planner: str = "astar"
     proximity_penalty_weight: float = 3.5
+
+    persistent_mapping: bool = True
+    vo_deadband_m: float = 0.015
+    log_odds_hit: float = 0.85
+    log_odds_free: float = -0.30
+    log_odds_min: float = -4.0
+    log_odds_max: float = 5.0
+    log_odds_occupied_threshold: float = 0.60
+    obstacle_merge_radius_m: float = 0.22

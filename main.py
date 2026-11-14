@@ -17,7 +17,7 @@ from src.visualization.hud import HUDRenderer
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Rover D415 Terrain Analysis & Autonomous Path Planning (NASA Space Apps 2026)"
+        description="Rover D415 Terrain Analysis & Persistent Global Path Planning (NASA Space Apps 2026)"
     )
     parser.add_argument(
         "--source",
@@ -29,7 +29,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--planner",
         choices=["astar", "dijkstra"],
         default="astar",
-        help="Algoritmo de ruta minima sobre la malla de ocupacion 2D.",
+        help="Algoritmo de ruta minima sobre la malla de ocupacion 2D acumulada.",
     )
     parser.add_argument(
         "--pitch",
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = TerrainNavigationPipeline(config)
     hud_renderer = HUDRenderer(config)
 
-    window_name = "Rover D415 Topographical Analysis & Path Planning (NASA Space Apps 2026)"
+    window_name = "Rover D415 Persistent Map & Path Planning (NASA Space Apps 2026)"
     frame_count = 0
     last_hud = None
     last_payload = None
@@ -148,13 +148,26 @@ def main(argv: list[str] | None = None) -> int:
                 elif key == ord("p"):
                     new_p = pipeline.toggle_planner()
                     print(f"[INFO] Algoritmo de navegacion cambiado a: {new_p.upper()}")
+                elif key == ord("m"):
+                    mode = pipeline.toggle_navigation_mode()
+                    print(f"[INFO] Modo de mision cambiado a: {mode}")
+                elif key == ord("r"):
+                    pipeline.reset_global_map()
+                    print("[INFO] Mapa global persistente reiniciado.")
+                elif key == ord("w"):
+                    p = pipeline.advance_pose_manually(dy_local_m=0.25)
+                    print(f"[INFO] Avance Dron/Rover -> Pose Global: ({p.x_m:+.2f}m, {p.y_m:+.2f}m)")
+                elif key == ord("s"):
+                    img_p, json_p = save_capture(last_hud, last_payload, args.save_dir)
+                    print(f"[INFO] Captura guardada en: {img_p} y {json_p}")
+                elif key == ord("a"):
+                    pipeline.advance_pose_manually(dx_local_m=-0.15)
+                elif key == ord("d"):
+                    pipeline.advance_pose_manually(dx_local_m=0.15)
                 elif key == ord("c"):
                     locked = pipeline.toggle_plane_lock()
                     state_str = "FIJADO (Manual)" if locked else "DINAMICO (RANSAC)"
                     print(f"[INFO] Plano de referencia del suelo: {state_str}")
-                elif key == ord("s"):
-                    img_p, json_p = save_capture(last_hud, last_payload, args.save_dir)
-                    print(f"[INFO] Captura guardada en: {img_p} y {json_p}")
 
             if args.frames > 0 and frame_count >= args.frames:
                 break
