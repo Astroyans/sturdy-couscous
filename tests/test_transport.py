@@ -12,6 +12,7 @@ from src.config import PipelineConfig
 from src.pipeline import TerrainNavigationPipeline
 from src.transport.client import TelemetrySender
 from src.transport.media import build_expo_payload
+from src.transport.server import ExpoLANServer
 
 
 def test_build_expo_payload_contains_telemetry_and_three_jpegs():
@@ -112,3 +113,56 @@ def test_telemetry_sender_does_not_block_when_backend_offline():
         assert sender.failed_count >= 1
     finally:
         sender.stop()
+
+
+def test_expo_lan_server_serves_latest_and_accepts_goal_for_ipad():
+    import requests
+
+    srv = ExpoLANServer(host="127.0.0.1", http_port=0, ws_port=-1)
+    srv.start()
+    try:
+        srv.publish({"node": "drone_cv", "data": {"altitude_m": 5.2}})
+        r1 = requests.get(f"http://127.0.0.1:{srv.http_port}/api/latest", timeout=2.0)
+        assert r1.status_code == 200
+        assert r1.json()["data"]["altitude_m"] == 5.2
+
+        r2 = requests.post(
+            f"http://127.0.0.1:{srv.http_port}/api/goal",
+            json={"norm_x": 0.4, "norm_y": 0.25},
+            timeout=2.0,
+        )
+        assert r2.status_code == 200
+        cmd = srv.pop_goal_command()
+        assert cmd == {"norm_x": 0.4, "norm_y": 0.25}
+    finally:
+        srv.stop()
+
+
+def test_nadir_aerial_view_and_on_demand_goal_flow():
+    cfg = PipelineConfig(
+        width=320,
+        height=240,
+        nominal_camera_pitch_deg=-90.0,
+        boulder_min_height_m=0.05,
+        crevice_min_depth_m=0.05,
+        min_cluster_pixels=40,
+    )
+    cam = SyntheticTerrainCamera(cfg, terrain_incline_deg=4.0)
+    cam.start()
+    frame = cam.read_frame()
+    cam.stop()
+
+    pipeline = TerrainNavigationPipeline(cfg)
+    out_idle, _, _ = pipeline.process_frame(frame)
+    rows, cols = out_idle.navigation.occupancy_grid.shape
+    assert out_idle.navigation.start_cell == (rows // 2, cols // 2)
+    assert out_idle.navigation.path_world_xy == []
+
+    pipeline.set_goal_normalized(0.5, 0.15)
+    out_routed, _, _ = pipeline.process_frame(frame)
+    assert len(out_routed.navigation.astar_path_world_xy) >= 5
+    assert len(out_routed.navigation.dijkstra_path_world_xy) >= 5
+
+    pipeline.clear_goal()
+    out_cleared, _, _ = pipeline.process_frame(frame)
+    assert out_cleared.navigation.path_world_xy == []

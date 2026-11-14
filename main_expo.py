@@ -14,6 +14,7 @@ from src.config import PipelineConfig
 from src.pipeline import TerrainNavigationPipeline
 from src.transport.client import TelemetrySender
 from src.transport.media import build_expo_payload
+from src.transport.server import ExpoLANServer, get_local_lan_ip
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,8 +57,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--pitch",
         type=float,
-        default=-15.0,
-        help="Angulo nominal de inclinacion de montaje de la camara en grados.",
+        default=-90.0,
+        help="Angulo nominal de inclinacion de montaje de la camara en grados (-90.0 = vista aerea cenital).",
+    )
+    parser.add_argument(
+        "--http-port",
+        type=int,
+        default=8000,
+        help="Puerto HTTP LAN directo para que el iPad (Expo Go) consulte /api/latest y envie /api/goal.",
+    )
+    parser.add_argument(
+        "--ws-port",
+        type=int,
+        default=8001,
+        help="Puerto WebSocket LAN directo para streaming en tiempo real hacia el iPad.",
+    )
+    parser.add_argument(
+        "--no-server",
+        action="store_true",
+        help="Desactivar el servidor LAN integrado hacia el iPad.",
     )
     parser.add_argument(
         "--boulder-min-height",
@@ -205,21 +223,37 @@ def main(argv: list[str] | None = None) -> int:
         auth_token=args.token or None,
         goal_url=args.goal_url,
     )
+    lan_server = (
+        None
+        if args.no_server
+        else ExpoLANServer(http_port=args.http_port, ws_port=args.ws_port)
+    )
 
     effective_transport = (
         args.transport if args.url and args.transport != "dry-run" else "dry-run"
     )
     print(
         f"[INFO] Nodo real Expo Go iniciado | Fuente: {active_source} | "
-        f"Transporte: {effective_transport} | URL: {args.url or '(solo respaldo local)'}"
+        f"Pitch: {args.pitch:.0f}deg | Transporte externo: {effective_transport}"
     )
 
     sender.start()
+    if lan_server is not None:
+        lan_server.start()
+        lan_ip = get_local_lan_ip()
+        print(
+            f"[LAN->iPad] Conectarse desde Expo Go en iPad A16:\n"
+            f"  -> WebSocket Stream : ws://{lan_ip}:{lan_server.ws_port}\n"
+            f"  -> HTTP Latest JSON : http://{lan_ip}:{lan_server.http_port}/api/latest\n"
+            f"  -> HTTP Click Destino: POST http://{lan_ip}:{lan_server.http_port}/api/goal"
+        )
     frame_count = 0
 
     try:
         while True:
             goal_cmd = sender.pop_goal_command()
+            if goal_cmd is None and lan_server is not None:
+                goal_cmd = lan_server.pop_goal_command()
             if goal_cmd is not None:
                 if goal_cmd.get("clear"):
                     pipeline.clear_goal()
@@ -242,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             sender.enqueue(payload)
+            if lan_server is not None:
+                lan_server.publish(payload)
             if not args.no_local_cache:
                 export_local_cache(payload, output)
 
@@ -250,9 +286,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.frames > 0 and frame_count >= args.frames
             ):
                 err_note = f" | err={sender.last_error}" if sender.last_error else ""
+                live_obs = len(output.frame_obstacles) if output.frame_obstacles is not None else len(output.obstacles)
                 print(
                     f"[EXPO] frame={frame_count} fps={output.edge_fps:.1f} "
-                    f"obs={len(output.obstacles)} "
+                    f"obs_live={live_obs} obs_map={len(output.obstacles)} "
                     f"sent={sender.sent_count} fail={sender.failed_count}{err_note}"
                 )
 
@@ -262,6 +299,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[INFO] Detenido por usuario.")
     finally:
+        if lan_server is not None:
+            lan_server.stop()
         sender.stop()
         camera.stop()
 

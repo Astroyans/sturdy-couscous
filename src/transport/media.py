@@ -141,6 +141,7 @@ def render_route_map(
     sy = map_h / float(rows)
     res = cfg.grid_resolution_m
     max_y_m = rows * res
+    y_min_m = -max_y_m / 2.0 if cfg.nominal_camera_pitch_deg <= -65.0 else 0.0
 
     step_m = 1.0 if max_y_m > 4.0 else 0.5
     d_m = step_m
@@ -148,10 +149,11 @@ def render_route_map(
         r = int(round(d_m / res))
         if 0 < r < rows:
             py = int(round((rows - 1 - r) * sy))
+            label_m = d_m + y_min_m
             cv2.line(scaled, (0, py), (width, py), (60, 75, 65), 1)
             cv2.putText(
                 scaled,
-                f"{d_m:.1f}m",
+                f"{label_m:+.1f}m" if y_min_m < 0 else f"{label_m:.1f}m",
                 (8, max(14, py - 4)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.38,

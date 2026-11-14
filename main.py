@@ -35,8 +35,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--pitch",
         type=float,
-        default=-15.0,
-        help="Angulo nominal de inclinacion de montaje de la camara en grados (ej. -15.0).",
+        default=-90.0,
+        help="Angulo nominal de inclinacion de montaje de la camara en grados (ej. -90.0 vista aerea cenital).",
     )
     parser.add_argument(
         "--boulder-min-height",
