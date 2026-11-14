@@ -101,6 +101,8 @@ class NavigationResult:
     path_world_xy: list[tuple[float, float]] = field(default_factory=list)
     astar_path_cells: list[tuple[int, int]] = field(default_factory=list)
     dijkstra_path_cells: list[tuple[int, int]] = field(default_factory=list)
+    astar_path_world_xy: list[tuple[float, float]] = field(default_factory=list)
+    dijkstra_path_world_xy: list[tuple[float, float]] = field(default_factory=list)
     astar_explored_nodes: int = 0
     dijkstra_explored_nodes: int = 0
     safe_corridor: bool = True
@@ -129,19 +131,55 @@ class PipelineOutput:
 
     def to_drone_cv_payload(self, node_name: str = "drone_cv") -> dict[str, Any]:
         ts = int(self.frame.timestamp) if self.frame.timestamp > 0 else int(time.time())
+        rx, ry, ryaw = self.rover_pose_xy_yaw
+        rows, cols = self.navigation.occupancy_grid.shape
+
         return {
             "node": node_name,
             "timestamp": ts,
             "data": {
                 "altitude_m": round(float(self.terrain.altitude_m), 2),
                 "imu": {
-                    "yaw": round(float(self.frame.imu_yaw + self.rover_pose_xy_yaw[2]), 1),
+                    "yaw": round(float(self.frame.imu_yaw + ryaw), 1),
                     "pitch": round(float(self.terrain.pitch_deg), 1),
                     "roll": round(float(self.terrain.roll_deg), 1),
                 },
                 "max_incline_deg": round(float(self.terrain.max_incline_deg), 1),
                 "safe_corridor": bool(self.navigation.safe_corridor),
                 "obstacles": [obs.to_contract_dict() for obs in self.obstacles],
+                "navigation": {
+                    "mode": self.navigation.navigation_mode,
+                    "active_planner": self.navigation.planner_used,
+                    "recommended_heading_deg": round(
+                        float(self.navigation.recommended_heading_deg), 1
+                    ),
+                    "rover_pose": {
+                        "x_m": round(float(rx), 2),
+                        "y_m": round(float(ry), 2),
+                        "yaw_deg": round(float(ryaw), 1),
+                        "traversed_distance_m": round(float(self.traversed_distance_m), 2),
+                    },
+                    "explored_area_m2": round(float(self.navigation.explored_area_m2), 2),
+                    "grid_shape": [int(rows), int(cols)],
+                    "route_waypoints_xy_m": [
+                        [round(float(wx), 2), round(float(wy), 2)]
+                        for wx, wy in self.navigation.path_world_xy
+                    ],
+                    "astar": {
+                        "explored_nodes": int(self.navigation.astar_explored_nodes),
+                        "waypoints_xy_m": [
+                            [round(float(wx), 2), round(float(wy), 2)]
+                            for wx, wy in self.navigation.astar_path_world_xy
+                        ],
+                    },
+                    "dijkstra": {
+                        "explored_nodes": int(self.navigation.dijkstra_explored_nodes),
+                        "waypoints_xy_m": [
+                            [round(float(wx), 2), round(float(wy), 2)]
+                            for wx, wy in self.navigation.dijkstra_path_world_xy
+                        ],
+                    },
+                },
                 "edge_fps": round(float(self.edge_fps), 1),
             },
         }

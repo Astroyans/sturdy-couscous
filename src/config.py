@@ -29,8 +29,8 @@ class PipelineConfig:
     min_cluster_pixels: int = 100
     use_dbscan: bool = True
     dbscan_eps_m: float = 0.08
-    dbscan_min_samples: int = 10
-    dbscan_max_points: int = 1500
+    dbscan_min_samples: int = 6
+    dbscan_max_points: int = 320
 
     grid_width_m: float = 4.00
     grid_depth_m: float = 6.00

@@ -65,6 +65,19 @@ class PathPlanner:
                         return (r, c)
         return (min_row, preferred_col)
 
+    def _build_nav_cost(
+        self,
+        occupancy_grid: np.ndarray,
+        cost_grid: np.ndarray,
+    ) -> list[float]:
+        blocked = (
+            (occupancy_grid == GRID_BOULDER)
+            | (occupancy_grid == GRID_CREVICE)
+            | (occupancy_grid == GRID_STEEP)
+            | (~np.isfinite(cost_grid))
+        )
+        return np.where(blocked, -1.0, cost_grid).ravel().tolist()
+
     def _run_search(
         self,
         occupancy_grid: np.ndarray,
@@ -72,64 +85,77 @@ class PathPlanner:
         start: tuple[int, int],
         goal: tuple[int, int],
         use_heuristic: bool,
+        nav_cost: Optional[list[float]] = None,
     ) -> tuple[list[tuple[int, int]], int, tuple[int, int]]:
         rows, cols = occupancy_grid.shape
-        g_score = np.full((rows, cols), np.inf, dtype=np.float64)
-        g_score[start] = 0.0
+        total_cells = rows * cols
+        start_idx = start[0] * cols + start[1]
+        goal_idx = goal[0] * cols + goal[1]
+        goal_r, goal_c = goal
 
-        came_from: dict[tuple[int, int], tuple[int, int]] = {}
-        open_heap: list[tuple[float, int, int]] = [(0.0, start[0], start[1])]
-        visited = np.zeros((rows, cols), dtype=bool)
+        if nav_cost is None:
+            nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
 
+        inf = float("inf")
+        g_score = [inf] * total_cells
+        g_score[start_idx] = 0.0
+        came_from = [-1] * total_cells
+        visited = [False] * total_cells
+
+        open_heap: list[tuple[float, int]] = [(0.0, start_idx)]
         explored = 0
-        best_reached = start
-        best_dist_to_goal = math.hypot(goal[0] - start[0], goal[1] - start[1])
+        best_reached_idx = start_idx
+        best_dist_sq = (goal_r - start[0]) ** 2 + (goal_c - start[1]) ** 2
+        hypot = math.hypot
+        heappush = heapq.heappush
+        heappop = heapq.heappop
+        neighbors = self._NEIGHBORS
 
         while open_heap:
-            _, r, c = heapq.heappop(open_heap)
-            if visited[r, c]:
+            _, idx = heappop(open_heap)
+            if visited[idx]:
                 continue
-            visited[r, c] = True
+            visited[idx] = True
             explored += 1
 
-            d_goal = math.hypot(goal[0] - r, goal[1] - c)
-            if d_goal < best_dist_to_goal:
-                best_dist_to_goal = d_goal
-                best_reached = (r, c)
+            r, c = divmod(idx, cols)
+            dr_g = goal_r - r
+            dc_g = goal_c - c
+            d_sq = dr_g * dr_g + dc_g * dc_g
+            if d_sq < best_dist_sq:
+                best_dist_sq = d_sq
+                best_reached_idx = idx
 
-            if (r, c) == goal:
-                best_reached = goal
+            if idx == goal_idx:
+                best_reached_idx = goal_idx
                 break
 
-            base_g = g_score[r, c]
-            for dr, dc, step_len in self._NEIGHBORS:
-                nr, nc = r + dr, c + dc
-                if not (0 <= nr < rows and 0 <= nc < cols):
-                    continue
-                if visited[nr, nc]:
-                    continue
-                if self._is_blocked(int(occupancy_grid[nr, nc])):
-                    continue
-
-                cell_cost = float(cost_grid[nr, nc])
-                if not math.isfinite(cell_cost):
-                    continue
-
-                tentative_g = base_g + step_len * cell_cost
-                if tentative_g < g_score[nr, nc]:
-                    g_score[nr, nc] = tentative_g
-                    came_from[(nr, nc)] = (r, c)
-                    h = math.hypot(goal[0] - nr, goal[1] - nc) if use_heuristic else 0.0
-                    heapq.heappush(open_heap, (tentative_g + h, nr, nc))
+            base_g = g_score[idx]
+            for dr, dc, step_len in neighbors:
+                nr = r + dr
+                nc = c + dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    nidx = nr * cols + nc
+                    if visited[nidx]:
+                        continue
+                    cell_cost = nav_cost[nidx]
+                    if cell_cost < 0.0:
+                        continue
+                    tentative_g = base_g + step_len * cell_cost
+                    if tentative_g < g_score[nidx]:
+                        g_score[nidx] = tentative_g
+                        came_from[nidx] = idx
+                        h = hypot(goal_r - nr, goal_c - nc) if use_heuristic else 0.0
+                        heappush(open_heap, (tentative_g + h, nidx))
 
         path_cells: list[tuple[int, int]] = []
-        curr = best_reached
-        while curr in came_from:
-            path_cells.append(curr)
+        curr = best_reached_idx
+        while curr != -1 and curr != start_idx:
+            path_cells.append(divmod(curr, cols))
             curr = came_from[curr]
         path_cells.append(start)
         path_cells.reverse()
-        return path_cells, explored, best_reached
+        return path_cells, explored, divmod(best_reached_idx, cols)
 
     def _compute_route_for_mode(
         self,
@@ -140,25 +166,26 @@ class PathPlanner:
         frontier_goal: tuple[int, int],
         navigation_mode: str,
         use_heuristic: bool,
+        nav_cost: Optional[list[float]] = None,
     ) -> tuple[list[tuple[int, int]], int, tuple[int, int]]:
         if navigation_mode == "RETURN_TO_BASE":
             start_search = current_cell if current_cell != base_cell else frontier_goal
             goal_search = base_cell
             return self._run_search(
-                occupancy_grid, cost_grid, start_search, goal_search, use_heuristic
+                occupancy_grid, cost_grid, start_search, goal_search, use_heuristic, nav_cost=nav_cost
             )
 
         if current_cell != base_cell:
             path_base_to_curr, exp1, _ = self._run_search(
-                occupancy_grid, cost_grid, base_cell, current_cell, use_heuristic
+                occupancy_grid, cost_grid, base_cell, current_cell, use_heuristic, nav_cost=nav_cost
             )
             path_curr_to_goal, exp2, reached = self._run_search(
-                occupancy_grid, cost_grid, current_cell, frontier_goal, use_heuristic
+                occupancy_grid, cost_grid, current_cell, frontier_goal, use_heuristic, nav_cost=nav_cost
             )
             return path_base_to_curr[:-1] + path_curr_to_goal, exp1 + exp2, reached
 
         return self._run_search(
-            occupancy_grid, cost_grid, base_cell, frontier_goal, use_heuristic
+            occupancy_grid, cost_grid, base_cell, frontier_goal, use_heuristic, nav_cost=nav_cost
         )
 
     def plan(
@@ -182,6 +209,7 @@ class PathPlanner:
             occupancy_grid, current_cell[1], min_row=current_cell[0]
         )
 
+        nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
         # Ejecutar automaticamente ambos algoritmos (A* y Dijkstra) sobre el mapa acumulado
         astar_cells, astar_exp, astar_reached = self._compute_route_for_mode(
             occupancy_grid,
@@ -191,6 +219,7 @@ class PathPlanner:
             frontier_goal,
             navigation_mode,
             use_heuristic=True,
+            nav_cost=nav_cost,
         )
         dijkstra_cells, dijkstra_exp, dijkstra_reached = self._compute_route_for_mode(
             occupancy_grid,
@@ -200,6 +229,7 @@ class PathPlanner:
             frontier_goal,
             navigation_mode,
             use_heuristic=False,
+            nav_cost=nav_cost,
         )
 
         if planner_name == "astar":
@@ -213,6 +243,12 @@ class PathPlanner:
 
         path_world_xy = [
             self.grid_builder.cell_to_world(r, c) for (r, c) in path_cells
+        ]
+        astar_world_xy = [
+            self.grid_builder.cell_to_world(r, c) for (r, c) in astar_cells
+        ]
+        dijkstra_world_xy = [
+            self.grid_builder.cell_to_world(r, c) for (r, c) in dijkstra_cells
         ]
 
         recommended_heading_deg = 0.0
@@ -241,6 +277,8 @@ class PathPlanner:
             path_world_xy=path_world_xy,
             astar_path_cells=astar_cells,
             dijkstra_path_cells=dijkstra_cells,
+            astar_path_world_xy=astar_world_xy,
+            dijkstra_path_world_xy=dijkstra_world_xy,
             astar_explored_nodes=astar_exp,
             dijkstra_explored_nodes=dijkstra_exp,
             safe_corridor=safe_corridor,

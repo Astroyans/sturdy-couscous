@@ -7,6 +7,7 @@ import sys
 import time
 
 import cv2
+import numpy as np
 
 from src.camera.realsense_d415 import RealSenseD415Camera
 from src.camera.synthetic import SyntheticTerrainCamera
@@ -84,11 +85,20 @@ def save_capture(hud_img, payload: dict, save_dir: str) -> tuple[str, str]:
     return img_path, json_path
 
 
-def export_live_telemetry(payload: dict, save_dir: str) -> str:
+def export_live_telemetry(output, payload: dict, save_dir: str) -> str:
     os.makedirs(save_dir, exist_ok=True)
     latest_path = os.path.join(save_dir, "latest_drone_cv.json")
     with open(latest_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    npz_path = os.path.join(save_dir, "latest_map_state.npz")
+    np.savez_compressed(
+        npz_path,
+        occupancy_grid=output.navigation.occupancy_grid,
+        cost_grid=output.navigation.cost_grid,
+        height_map_m=output.terrain.height_map_m,
+        slope_map_deg=output.terrain.slope_map_deg,
+    )
     return latest_path
 
 
@@ -132,12 +142,14 @@ def main(argv: list[str] | None = None) -> int:
     frame_count = 0
     last_hud = None
     last_payload = None
+    last_output = None
     last_export_ts = 0.0
 
     try:
         while True:
             frame_bundle = camera.read_frame()
             output, boulder_mask, crevice_mask = pipeline.process_frame(frame_bundle)
+            last_output = output
             last_payload = output.to_drone_cv_payload()
             last_hud = hud_renderer.render(
                 output,
@@ -149,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
 
             now = time.time()
             if now - last_export_ts >= 0.5:
-                export_live_telemetry(last_payload, args.save_dir)
+                export_live_telemetry(output, last_payload, args.save_dir)
                 last_export_ts = now
 
             frame_count += 1
@@ -186,8 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.frames > 0 and frame_count >= args.frames:
                 break
 
-        if last_payload is not None:
-            export_live_telemetry(last_payload, args.save_dir)
+        if last_payload is not None and last_output is not None:
+            export_live_telemetry(last_output, last_payload, args.save_dir)
 
         if args.save_snapshot and last_hud is not None and last_payload is not None:
             img_p, json_p = save_capture(last_hud, last_payload, args.save_dir)

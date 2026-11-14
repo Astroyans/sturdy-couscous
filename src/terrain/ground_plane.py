@@ -186,19 +186,37 @@ class GroundPlaneAnalyzer:
         pitch_deg = math.degrees(math.atan2(-float(normal[1]), max(float(normal[2]), 1e-5)))
         roll_deg = math.degrees(math.atan2(float(normal[0]), max(float(normal[2]), 1e-5)))
 
-        h_grad_y, h_grad_x = np.gradient(
-            cv2.GaussianBlur(height_map_m, (7, 7), 1.5), 0.02, 0.02
+        valid_f = valid_mask.astype(np.float32)
+        h_smooth_num = cv2.GaussianBlur(
+            np.where(valid_mask, height_map_m, 0.0), (7, 7), 1.5
         )
-        extra_slope_deg = np.degrees(np.arctan(np.sqrt(h_grad_x**2 + h_grad_y**2))) * 0.25
-        slope_map_deg = np.where(
-            valid_mask,
-            np.clip(plane_tilt_deg + extra_slope_deg, 0.0, 85.0),
+        h_smooth_den = cv2.GaussianBlur(valid_f, (7, 7), 1.5)
+        h_smooth = np.where(
+            valid_mask & (h_smooth_den > 0.1),
+            h_smooth_num / np.maximum(h_smooth_den, 1e-4),
             0.0,
+        )
+
+        dh_dy_px, dh_dx_px = np.gradient(h_smooth)
+        step_x_m = np.maximum(depth_m / max(intrinsics.fx, 1.0), 0.004)
+        step_y_m = np.maximum(depth_m / max(intrinsics.fy, 1.0), 0.004)
+        grad_mag = np.sqrt((dh_dx_px / step_x_m) ** 2 + (dh_dy_px / step_y_m) ** 2)
+
+        dd_dy, dd_dx = np.gradient(np.where(valid_mask, depth_m, 0.0))
+        jump_edge = (np.abs(dd_dx) > 0.12) | (np.abs(dd_dy) > 0.12)
+        eroded_valid = cv2.erode(valid_f.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        slope_valid = eroded_valid & (~jump_edge)
+
+        extra_slope_deg = np.degrees(np.arctan(grad_mag)) * 0.25
+        slope_map_deg = np.where(
+            slope_valid,
+            np.clip(plane_tilt_deg + extra_slope_deg, 0.0, 85.0),
+            np.where(valid_mask, plane_tilt_deg, 0.0),
         ).astype(np.float32)
 
         altitude_m = max(0.05, abs(float(plane_d)))
 
-        ground_inliers = valid_mask & (np.abs(height_map_m) <= self.config.boulder_min_height_m)
+        ground_inliers = slope_valid & (np.abs(height_map_m) <= self.config.boulder_min_height_m)
         if np.any(ground_inliers):
             max_incline_deg = float(np.percentile(slope_map_deg[ground_inliers], 90))
         else:

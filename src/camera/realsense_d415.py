@@ -34,6 +34,7 @@ class RealSenseD415Camera:
         self._latest_bundle: Optional[FrameBundle] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._align = None
 
     @staticmethod
     def list_connected_devices() -> list[str]:
@@ -44,15 +45,24 @@ class RealSenseD415Camera:
 
     def _extract_bundle_from_frameset(self, frames) -> Optional[FrameBundle]:
         assert self.intrinsics is not None
-        d_frame = frames.get_depth_frame()
+        aligned = None
+        if self._align is not None and not self.depth_only_mode:
+            aligned = self._align.process(frames)
+            active_frames = aligned
+        else:
+            active_frames = frames
+
+        d_frame = active_frames.get_depth_frame()
         if not d_frame:
+            if aligned is not None:
+                del aligned
             return None
 
         raw_depth = np.asanyarray(d_frame.get_data()).copy()
         depth_m = raw_depth.astype(np.float32) * self.depth_scale
         h, w = depth_m.shape
 
-        c_frame = frames.get_color_frame() if not self.depth_only_mode else None
+        c_frame = active_frames.get_color_frame() if not self.depth_only_mode else None
         if c_frame:
             raw_color = np.asanyarray(c_frame.get_data()).copy()
             if (raw_color.shape[1], raw_color.shape[0]) != (w, h):
@@ -67,6 +77,8 @@ class RealSenseD415Camera:
 
         del c_frame
         del d_frame
+        if aligned is not None:
+            del aligned
 
         return FrameBundle(
             timestamp=time.time(),
@@ -152,9 +164,11 @@ class RealSenseD415Camera:
                     if depth_sensor.supports(rs.option.global_time_enabled):
                         depth_sensor.set_option(rs.option.global_time_enabled, 0.0)
 
-                target_stream = profile.get_stream(
-                    rs.stream.depth
-                ).as_video_stream_profile()
+                self.depth_only_mode = color_spec is None
+                self._align = None if self.depth_only_mode else rs.align(rs.stream.color)
+
+                stream_type = rs.stream.depth if self.depth_only_mode else rs.stream.color
+                target_stream = profile.get_stream(stream_type).as_video_stream_profile()
                 intr = target_stream.get_intrinsics()
                 self.intrinsics = CameraIntrinsics(
                     width=int(intr.width),
@@ -165,7 +179,6 @@ class RealSenseD415Camera:
                     ppy=float(intr.ppy),
                     depth_scale=self.depth_scale,
                 )
-                self.depth_only_mode = color_spec is None
 
                 frames = pipeline.wait_for_frames(timeout_ms=4000)
                 first_bundle = self._extract_bundle_from_frameset(frames)
