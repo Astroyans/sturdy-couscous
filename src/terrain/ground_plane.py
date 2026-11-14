@@ -106,6 +106,14 @@ class GroundPlaneAnalyzer:
             default_normal = np.array([0.0, 0.0, 1.0], dtype=np.float32)
             return default_normal, float(self.config.nominal_camera_height_m)
 
+        if self.config.nominal_camera_pitch_deg <= -65.0 and pts.shape[0] >= 80:
+            ray_d = np.linalg.norm(pts, axis=1)
+            q25, q55, q85, q97 = np.percentile(ray_d, [25, 55, 85, 97])
+            if float(q85 - q25) > 0.22:
+                deep_pts = pts[(ray_d >= q55) & (ray_d <= q97)]
+                if deep_pts.shape[0] >= 40:
+                    pts = deep_pts
+
         rng = np.random.default_rng(12345)
         if pts.shape[0] > 1200:
             idx = rng.choice(pts.shape[0], size=1200, replace=False)
@@ -253,11 +261,42 @@ class GroundPlaneAnalyzer:
             np.where(valid_mask, base_tilt_deg, 0.0),
         ).astype(np.float32)
 
-        raw_altitude_m = max(0.05, abs(float(plane_d)))
+        h_img, w_img = depth_m.shape
+        ray_candidate = (
+            slope_valid
+            & (depth_m >= self.config.min_depth_m)
+            & (depth_m <= self.config.max_depth_m)
+        )
+        num_rc, rc_labels, rc_stats, _ = cv2.connectedComponentsWithStats(
+            ray_candidate.astype(np.uint8), connectivity=8
+        )
+        min_ray_island = max(120, int(h_img * w_img * 0.015))
+        clean_ray_mask = np.zeros((h_img, w_img), dtype=bool)
+        for rc_lbl in range(1, num_rc):
+            if int(rc_stats[rc_lbl, cv2.CC_STAT_AREA]) >= min_ray_island:
+                clean_ray_mask |= rc_labels == rc_lbl
+
+        roi_mask = np.zeros((h_img, w_img), dtype=bool)
+        y0_roi, y1_roi = int(h_img * 0.18), int(h_img * 0.88)
+        x0_roi, x1_roi = int(w_img * 0.10), int(w_img * 0.90)
+        roi_mask[y0_roi:y1_roi, x0_roi:x1_roi] = True
+
+        ground_rays = clean_ray_mask & roi_mask & (depth_m <= 3.5)
+        if np.any(ground_rays):
+            raw_altitude_m = float(np.percentile(depth_m[ground_rays], 88))
+        elif np.any(clean_ray_mask & (depth_m <= 3.5)):
+            raw_altitude_m = float(np.percentile(depth_m[clean_ray_mask & (depth_m <= 3.5)], 88))
+        elif np.any(clean_ray_mask):
+            raw_altitude_m = float(np.percentile(depth_m[clean_ray_mask], 85))
+        elif np.any(valid_mask):
+            raw_altitude_m = float(np.percentile(depth_m[valid_mask], 85))
+        else:
+            raw_altitude_m = max(0.05, abs(float(plane_d)))
+
         if self._ema_altitude_m is None:
             self._ema_altitude_m = raw_altitude_m
         else:
-            self._ema_altitude_m = 0.75 * self._ema_altitude_m + 0.25 * raw_altitude_m
+            self._ema_altitude_m = 0.70 * self._ema_altitude_m + 0.30 * raw_altitude_m
         altitude_m = float(self._ema_altitude_m)
 
         inlier_band = max(self.config.ransac_inlier_threshold_m * 2.5, 0.05)

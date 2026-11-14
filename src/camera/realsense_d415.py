@@ -163,6 +163,12 @@ class RealSenseD415Camera:
                         depth_sensor.set_option(rs.option.laser_power, 60.0)
                     if depth_sensor.supports(rs.option.global_time_enabled):
                         depth_sensor.set_option(rs.option.global_time_enabled, 0.0)
+                else:
+                    if depth_sensor.supports(rs.option.emitter_enabled):
+                        depth_sensor.set_option(rs.option.emitter_enabled, 1.0)
+                    if depth_sensor.supports(rs.option.laser_power):
+                        lp_range = depth_sensor.get_option_range(rs.option.laser_power)
+                        depth_sensor.set_option(rs.option.laser_power, float(lp_range.max))
 
                 self.depth_only_mode = color_spec is None
                 self._align = None if self.depth_only_mode else rs.align(rs.stream.color)

@@ -35,3 +35,20 @@ def test_plane_lock_and_unlock():
 
     analyzer.unlock_plane()
     assert not analyzer.is_plane_locked
+
+
+def test_altitude_uses_deep_tof_rays_ignoring_foreground_table():
+    cfg = PipelineConfig(width=320, height=240, nominal_camera_pitch_deg=-90.0)
+    cam = SyntheticTerrainCamera(cfg, terrain_incline_deg=0.0, add_noise=False)
+    frame = cam.read_frame()
+
+    depth_m = np.full((240, 320), 1.15, dtype=np.float32)
+    depth_m[:135, :] = 0.27
+
+    filtered_depth, valid_mask = preprocess_depth(depth_m, cfg)
+    analyzer = GroundPlaneAnalyzer(cfg)
+    terrain = analyzer.analyze(filtered_depth, valid_mask, frame.intrinsics)
+
+    assert terrain.altitude_m > 1.05
+    assert float(np.median(terrain.height_map_m[:100, :])) > 0.70
+
