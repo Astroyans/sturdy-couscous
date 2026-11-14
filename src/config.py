@@ -25,9 +25,9 @@ class PipelineConfig:
 
     boulder_min_height_m: float = 0.15
     crevice_min_depth_m: float = 0.15
-    max_anomaly_magnitude_m: float = 1.50
-    min_cluster_pixels: int = 400
-    min_obstacle_extent_m: float = 0.10
+    max_anomaly_magnitude_m: float = 0.65
+    min_cluster_pixels: int = 450
+    min_obstacle_extent_m: float = 0.12
     use_dbscan: bool = True
     dbscan_eps_m: float = 0.08
     dbscan_min_samples: int = 6
@@ -50,4 +50,4 @@ class PipelineConfig:
     log_odds_min: float = -4.0
     log_odds_max: float = 5.0
     log_odds_occupied_threshold: float = 0.60
-    obstacle_merge_radius_m: float = 0.22
+    obstacle_merge_radius_m: float = 0.38

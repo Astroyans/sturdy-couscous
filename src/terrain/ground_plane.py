@@ -95,7 +95,8 @@ class GroundPlaneAnalyzer:
 
         h_sub = sub_mask.shape[0]
         ground_roi_mask = sub_mask.copy()
-        ground_roi_mask[: h_sub // 5, :] = False
+        if self.config.nominal_camera_pitch_deg > -65.0:
+            ground_roi_mask[: h_sub // 5, :] = False
 
         pts = sub_pts[ground_roi_mask]
         if pts.shape[0] < 50:
@@ -198,11 +199,11 @@ class GroundPlaneAnalyzer:
 
         valid_f = valid_mask.astype(np.float32)
         h_smooth_num = cv2.GaussianBlur(
-            np.where(valid_mask, height_map_m, 0.0), (7, 7), 1.5
+            np.where(valid_mask, height_map_m, 0.0), (15, 15), 3.0
         )
-        h_smooth_den = cv2.GaussianBlur(valid_f, (7, 7), 1.5)
+        h_smooth_den = cv2.GaussianBlur(valid_f, (15, 15), 3.0)
         h_smooth = np.where(
-            valid_mask & (h_smooth_den > 0.1),
+            valid_mask & (h_smooth_den > 0.2),
             h_smooth_num / np.maximum(h_smooth_den, 1e-4),
             0.0,
         )
@@ -212,8 +213,8 @@ class GroundPlaneAnalyzer:
         dy_world_x = np.gradient(points_3d[:, :, 1], axis=1)
         dx_world_y = np.gradient(points_3d[:, :, 0], axis=0)
         dy_world = np.gradient(points_3d[:, :, 1], axis=0)
-        step_x_m = np.maximum(np.hypot(dx_world, dy_world_x), 0.005)
-        step_y_m = np.maximum(np.hypot(dx_world_y, dy_world), 0.005)
+        step_x_m = np.maximum(np.hypot(dx_world, dy_world_x), 0.025)
+        step_y_m = np.maximum(np.hypot(dx_world_y, dy_world), 0.025)
         grad_mag = np.sqrt((dh_dx_px / step_x_m) ** 2 + (dh_dy_px / step_y_m) ** 2)
 
         dd_dy, dd_dx = np.gradient(np.where(valid_mask, depth_m, 0.0))
@@ -235,9 +236,10 @@ class GroundPlaneAnalyzer:
             self._ema_altitude_m = 0.75 * self._ema_altitude_m + 0.25 * raw_altitude_m
         altitude_m = float(self._ema_altitude_m)
 
-        ground_inliers = slope_valid & (np.abs(height_map_m) <= self.config.boulder_min_height_m)
+        inlier_band = max(self.config.ransac_inlier_threshold_m * 2.5, 0.05)
+        ground_inliers = slope_valid & (np.abs(height_map_m) <= inlier_band)
         if np.any(ground_inliers):
-            max_incline_deg = float(np.percentile(slope_map_deg[ground_inliers], 90))
+            max_incline_deg = float(np.percentile(slope_map_deg[ground_inliers], 80))
         else:
             max_incline_deg = float(plane_tilt_deg)
 

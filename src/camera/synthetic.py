@@ -67,7 +67,13 @@ class SyntheticTerrainCamera:
 
         phase = 0.08 * math.sin(self._frame_idx * 0.1) if self.animate else 0.0
 
-        b_x, b_y, b_r, b_h = -0.28 + phase, 1.25, 0.16, 0.14
+        if self.config.nominal_camera_pitch_deg <= -65.0:
+            b_x, b_y, b_r, b_h = -0.18 + phase, 0.15, 0.16, 0.18
+            c_x, c_y, c_rx, c_ry, c_d = 0.18 - phase, -0.15, 0.20, 0.12, 0.18
+        else:
+            b_x, b_y, b_r, b_h = -0.28 + phase, 1.25, 0.16, 0.14
+            c_x, c_y, c_rx, c_ry, c_d = 0.30 - phase, 1.45, 0.20, 0.12, 0.13
+
         dist_b2 = (X - b_x) ** 2 + (Y - b_y) ** 2
         boulder_profile = np.where(
             dist_b2 < b_r**2,
@@ -75,7 +81,6 @@ class SyntheticTerrainCamera:
             0.0,
         )
 
-        c_x, c_y, c_rx, c_ry, c_d = 0.30 - phase, 1.45, 0.20, 0.12, 0.13
         dist_c2 = ((X - c_x) / c_rx) ** 2 + ((Y - c_y) / c_ry) ** 2
         crevice_profile = np.where(
             dist_c2 < 1.0,

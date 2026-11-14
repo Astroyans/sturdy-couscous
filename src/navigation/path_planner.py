@@ -203,7 +203,7 @@ class PathPlanner:
             planner_name = "astar"
 
         rows, cols = occupancy_grid.shape
-        base_cell = (0, cols // 2)
+        base_cell = self.grid_builder.world_to_cell(0.0, 0.0)
         current_pose = pose or Pose2D()
         current_cell = self.grid_builder.world_to_cell(current_pose.x_m, current_pose.y_m)
 
