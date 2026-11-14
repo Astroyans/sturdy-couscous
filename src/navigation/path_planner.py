@@ -196,6 +196,7 @@ class PathPlanner:
         algorithm: Optional[str] = None,
         pose: Optional[Pose2D] = None,
         navigation_mode: str = "EXPLORE_FORWARD",
+        goal_world_xy: Optional[tuple[float, float]] = None,
     ) -> NavigationResult:
         planner_name = (algorithm or self.config.default_planner).lower().strip()
         if planner_name not in ("astar", "dijkstra"):
@@ -205,32 +206,54 @@ class PathPlanner:
         base_cell = (0, cols // 2)
         current_pose = pose or Pose2D()
         current_cell = self.grid_builder.world_to_cell(current_pose.x_m, current_pose.y_m)
-        frontier_goal = self._select_frontier_goal_cell(
-            occupancy_grid, current_cell[1], min_row=current_cell[0]
-        )
 
-        nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
-        # Ejecutar automaticamente ambos algoritmos (A* y Dijkstra) sobre el mapa acumulado
-        astar_cells, astar_exp, astar_reached = self._compute_route_for_mode(
-            occupancy_grid,
-            cost_grid,
-            base_cell,
-            current_cell,
-            frontier_goal,
-            navigation_mode,
-            use_heuristic=True,
-            nav_cost=nav_cost,
-        )
-        dijkstra_cells, dijkstra_exp, dijkstra_reached = self._compute_route_for_mode(
-            occupancy_grid,
-            cost_grid,
-            base_cell,
-            current_cell,
-            frontier_goal,
-            navigation_mode,
-            use_heuristic=False,
-            nav_cost=nav_cost,
-        )
+        if goal_world_xy is not None:
+            target_cell = self.grid_builder.world_to_cell(goal_world_xy[0], goal_world_xy[1])
+            nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
+            astar_cells, astar_exp, astar_reached = self._run_search(
+                occupancy_grid,
+                cost_grid,
+                current_cell,
+                target_cell,
+                use_heuristic=True,
+                nav_cost=nav_cost,
+            )
+            dijkstra_cells, dijkstra_exp, dijkstra_reached = self._run_search(
+                occupancy_grid,
+                cost_grid,
+                current_cell,
+                target_cell,
+                use_heuristic=False,
+                nav_cost=nav_cost,
+            )
+        elif navigation_mode == "RETURN_TO_BASE" or self.config.auto_frontier_route:
+            frontier_goal = self._select_frontier_goal_cell(
+                occupancy_grid, current_cell[1], min_row=current_cell[0]
+            )
+            nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
+            astar_cells, astar_exp, astar_reached = self._compute_route_for_mode(
+                occupancy_grid,
+                cost_grid,
+                base_cell,
+                current_cell,
+                frontier_goal,
+                navigation_mode,
+                use_heuristic=True,
+                nav_cost=nav_cost,
+            )
+            dijkstra_cells, dijkstra_exp, dijkstra_reached = self._compute_route_for_mode(
+                occupancy_grid,
+                cost_grid,
+                base_cell,
+                current_cell,
+                frontier_goal,
+                navigation_mode,
+                use_heuristic=False,
+                nav_cost=nav_cost,
+            )
+        else:
+            astar_cells, astar_exp, astar_reached = [], 0, current_cell
+            dijkstra_cells, dijkstra_exp, dijkstra_reached = [], 0, current_cell
 
         if planner_name == "astar":
             path_cells = astar_cells

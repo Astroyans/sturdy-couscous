@@ -46,7 +46,12 @@ def render_rgb_annotated(output: PipelineOutput) -> np.ndarray:
     rgb = output.frame.color_bgr.copy()
     h, w = rgb.shape[:2]
 
-    for obs in output.obstacles:
+    live_obstacles = (
+        output.frame_obstacles
+        if output.frame_obstacles is not None
+        else output.obstacles
+    )
+    for obs in live_obstacles:
         x, y, bw, bh = obs.bbox_2d
         if obs.type == "BOULDER":
             color = (30, 110, 255)

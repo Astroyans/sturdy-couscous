@@ -128,6 +128,7 @@ class PipelineOutput:
     edge_fps: float
     rover_pose_xy_yaw: tuple[float, float, float] = (0.0, 0.0, 0.0)
     traversed_distance_m: float = 0.0
+    frame_obstacles: Optional[list[Obstacle]] = None
 
     def to_drone_cv_payload(self, node_name: str = "drone_cv") -> dict[str, Any]:
         ts = int(self.frame.timestamp) if self.frame.timestamp > 0 else int(time.time())

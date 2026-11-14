@@ -6,7 +6,13 @@ from src.terrain.ground_plane import GroundPlaneAnalyzer
 
 
 def test_obstacle_detector_identifies_boulder_and_crevice():
-    cfg = PipelineConfig(width=320, height=240, min_cluster_pixels=40)
+    cfg = PipelineConfig(
+        width=320,
+        height=240,
+        min_cluster_pixels=40,
+        boulder_min_height_m=0.05,
+        crevice_min_depth_m=0.05,
+    )
     cam = SyntheticTerrainCamera(cfg, terrain_incline_deg=5.0, add_noise=False)
     frame = cam.read_frame()
 

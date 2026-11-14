@@ -11,13 +11,24 @@ from src.visualization.hud import HUDRenderer
 
 
 def test_full_pipeline_and_hud_rendering():
-    cfg = PipelineConfig(width=320, height=240, min_cluster_pixels=40)
+    cfg = PipelineConfig(
+        width=320,
+        height=240,
+        min_cluster_pixels=40,
+        boulder_min_height_m=0.05,
+        crevice_min_depth_m=0.05,
+    )
     cam = SyntheticTerrainCamera(cfg, terrain_incline_deg=6.0)
     pipeline = TerrainNavigationPipeline(cfg)
     hud = HUDRenderer(cfg)
 
     frame = cam.read_frame()
+    output_idle, _, _ = pipeline.process_frame(frame)
+    assert output_idle.navigation.path_world_xy == []
+
+    pipeline.set_goal_normalized(0.5, 0.2)
     output, boulder_mask, crevice_mask = pipeline.process_frame(frame)
+    assert len(output.navigation.path_world_xy) >= 2
     canvas = hud.render(output, boulder_mask, crevice_mask, source_name=cam.device_name)
 
     assert canvas.shape == (720, 1280, 3)

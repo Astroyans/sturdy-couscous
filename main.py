@@ -41,13 +41,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--boulder-min-height",
         type=float,
-        default=0.045,
+        default=0.15,
         help="Altura minima en metros sobre el plano del suelo para clasificar BOULDER.",
     )
     parser.add_argument(
         "--crevice-min-depth",
         type=float,
-        default=0.045,
+        default=0.15,
         help="Profundidad minima en metros bajo el plano del suelo para clasificar CREVICE.",
     )
     parser.add_argument(
@@ -139,6 +139,20 @@ def main(argv: list[str] | None = None) -> int:
     hud_renderer = HUDRenderer(config)
 
     window_name = "Rover D415 Automated Persistent Map & Path Planning (NASA Space Apps 2026)"
+    if not args.headless:
+        def _on_mouse(event, x, y, _flags, _param):
+            if event == cv2.EVENT_LBUTTONDOWN and 490 <= x <= 910 and 40 <= y <= 660:
+                nx = (x - 490) / 420.0
+                ny = (y - 40) / 620.0
+                gx, gy = pipeline.set_goal_normalized(nx, ny)
+                print(f"[INFO] Destino fijado en mapa: ({gx:+.2f}m, {gy:+.2f}m)")
+            elif event == cv2.EVENT_RBUTTONDOWN:
+                pipeline.clear_goal()
+                print("[INFO] Destino limpiado.")
+
+        cv2.namedWindow(window_name)
+        cv2.setMouseCallback(window_name, _on_mouse)
+
     frame_count = 0
     last_hud = None
     last_payload = None
@@ -194,6 +208,9 @@ def main(argv: list[str] | None = None) -> int:
                     locked = pipeline.toggle_plane_lock()
                     state_str = "FIJADO (Manual)" if locked else "DINAMICO (RANSAC)"
                     print(f"[INFO] Plano de referencia del suelo: {state_str}")
+                elif key == ord("x"):
+                    pipeline.clear_goal()
+                    print("[INFO] Destino limpiado.")
 
             if args.frames > 0 and frame_count >= args.frames:
                 break

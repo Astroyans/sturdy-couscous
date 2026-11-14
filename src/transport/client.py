@@ -20,20 +20,41 @@ class TelemetrySender:
         transport: str = "http",
         timeout_s: float = 3.0,
         auth_token: Optional[str] = None,
+        goal_url: str = "",
     ) -> None:
         self.url = url.strip()
+        self.goal_url = goal_url.strip()
         self.transport = transport.lower().strip()
         self.timeout_s = timeout_s
         self.auth_token = auth_token
 
         self._cond = threading.Condition()
         self._pending_payload: Optional[dict[str, Any]] = None
+        self._goal_lock = threading.Lock()
+        self._pending_goal_cmd: Optional[dict[str, Any]] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
         self.sent_count = 0
         self.failed_count = 0
         self.last_error: Optional[str] = None
+
+    def pop_goal_command(self) -> Optional[dict[str, Any]]:
+        with self._goal_lock:
+            cmd = self._pending_goal_cmd
+            self._pending_goal_cmd = None
+            return cmd
+
+    def _push_goal_command(self, raw_msg: Any) -> None:
+        try:
+            data = json.loads(raw_msg) if isinstance(raw_msg, str) else raw_msg
+            if not isinstance(data, dict):
+                return
+            if any(k in data for k in ("x_m", "y_m", "norm_x", "norm_y", "clear")):
+                with self._goal_lock:
+                    self._pending_goal_cmd = data
+        except Exception:
+            return
 
     def start(self) -> None:
         if self.transport == "dry-run" or not self.url:
@@ -84,8 +105,20 @@ class TelemetrySender:
     def _run_http_loop(self) -> None:
         session = requests.Session()
         headers = self._headers()
+        last_goal_poll = 0.0
         try:
             while self._running:
+                if self.goal_url and (time.perf_counter() - last_goal_poll) >= 0.5:
+                    last_goal_poll = time.perf_counter()
+                    try:
+                        g_resp = session.get(
+                            self.goal_url, headers=headers, timeout=self.timeout_s
+                        )
+                        if 200 <= g_resp.status_code < 300 and g_resp.text.strip():
+                            self._push_goal_command(g_resp.json())
+                    except Exception:
+                        pass
+
                 payload = self._take_next_payload()
                 if payload is None:
                     continue
@@ -129,6 +162,12 @@ class TelemetrySender:
                 ) as ws:
                     self.last_error = None
                     while self._running:
+                        try:
+                            incoming = ws.recv(timeout=0.01)
+                            if incoming:
+                                self._push_goal_command(incoming)
+                        except TimeoutError:
+                            pass
                         payload = self._take_next_payload()
                         if payload is None:
                             continue

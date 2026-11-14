@@ -11,6 +11,8 @@ def test_persistent_map_accumulates_across_multiple_frames_and_poses():
         width=320,
         height=240,
         min_cluster_pixels=40,
+        boulder_min_height_m=0.05,
+        crevice_min_depth_m=0.05,
         grid_width_m=4.0,
         grid_depth_m=5.0,
         persistent_mapping=True,

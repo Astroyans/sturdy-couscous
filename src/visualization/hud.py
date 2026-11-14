@@ -71,7 +71,12 @@ class HUDRenderer:
             pts_arr = np.array(projected_pts, dtype=np.int32).reshape((-1, 1, 2))
             cv2.polylines(rgb, [pts_arr], False, (0, 255, 120), 3, cv2.LINE_AA)
 
-        for obs in output.obstacles:
+        live_obstacles = (
+            output.frame_obstacles
+            if output.frame_obstacles is not None
+            else output.obstacles
+        )
+        for obs in live_obstacles:
             x, y, bw, bh = obs.bbox_2d
             if obs.type == "BOULDER":
                 color = (30, 110, 255)

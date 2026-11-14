@@ -15,6 +15,8 @@ class GroundPlaneAnalyzer:
         self.config = config or PipelineConfig()
         self._locked_normal: Optional[np.ndarray] = None
         self._locked_d: Optional[float] = None
+        self._ema_altitude_m: Optional[float] = None
+        self._last_valid_plane: Optional[tuple[np.ndarray, float]] = None
         self._grid_cache: dict[tuple[int, int, float, float, float, float], tuple[np.ndarray, np.ndarray]] = {}
 
     def lock_plane(self, normal: np.ndarray, d: float) -> None:
@@ -172,6 +174,14 @@ class GroundPlaneAnalyzer:
             depth_m, intrinsics, camera_pitch_deg=camera_pitch_deg
         )
         normal, plane_d = self._fit_plane_ransac(points_3d, valid_mask)
+        if normal[2] <= 0.707:
+            if self._last_valid_plane is not None:
+                normal, plane_d = self._last_valid_plane
+            else:
+                normal = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+                plane_d = float(self.config.nominal_camera_height_m)
+        else:
+            self._last_valid_plane = (normal.copy(), float(plane_d))
 
         height_map_m = (
             points_3d[:, :, 0] * normal[0]
@@ -198,8 +208,12 @@ class GroundPlaneAnalyzer:
         )
 
         dh_dy_px, dh_dx_px = np.gradient(h_smooth)
-        step_x_m = np.maximum(depth_m / max(intrinsics.fx, 1.0), 0.004)
-        step_y_m = np.maximum(depth_m / max(intrinsics.fy, 1.0), 0.004)
+        dx_world = np.gradient(points_3d[:, :, 0], axis=1)
+        dy_world_x = np.gradient(points_3d[:, :, 1], axis=1)
+        dx_world_y = np.gradient(points_3d[:, :, 0], axis=0)
+        dy_world = np.gradient(points_3d[:, :, 1], axis=0)
+        step_x_m = np.maximum(np.hypot(dx_world, dy_world_x), 0.005)
+        step_y_m = np.maximum(np.hypot(dx_world_y, dy_world), 0.005)
         grad_mag = np.sqrt((dh_dx_px / step_x_m) ** 2 + (dh_dy_px / step_y_m) ** 2)
 
         dd_dy, dd_dx = np.gradient(np.where(valid_mask, depth_m, 0.0))
@@ -214,7 +228,12 @@ class GroundPlaneAnalyzer:
             np.where(valid_mask, plane_tilt_deg, 0.0),
         ).astype(np.float32)
 
-        altitude_m = max(0.05, abs(float(plane_d)))
+        raw_altitude_m = max(0.05, abs(float(plane_d)))
+        if self._ema_altitude_m is None:
+            self._ema_altitude_m = raw_altitude_m
+        else:
+            self._ema_altitude_m = 0.75 * self._ema_altitude_m + 0.25 * raw_altitude_m
+        altitude_m = float(self._ema_altitude_m)
 
         ground_inliers = slope_valid & (np.abs(height_map_m) <= self.config.boulder_min_height_m)
         if np.any(ground_inliers):

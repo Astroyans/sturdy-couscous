@@ -7,7 +7,7 @@ class PipelineConfig:
     height: int = 480
     fps: int = 30
     min_depth_m: float = 0.25
-    max_depth_m: float = 4.00
+    max_depth_m: float = 6.50
     nominal_camera_height_m: float = 0.45
     nominal_camera_pitch_deg: float = -15.0
 
@@ -23,10 +23,11 @@ class PipelineConfig:
     max_safe_incline_deg: float = 20.0
     slope_window_size: int = 5
 
-    boulder_min_height_m: float = 0.045
-    crevice_min_depth_m: float = 0.045
+    boulder_min_height_m: float = 0.15
+    crevice_min_depth_m: float = 0.15
     max_anomaly_magnitude_m: float = 1.50
-    min_cluster_pixels: int = 100
+    min_cluster_pixels: int = 400
+    min_obstacle_extent_m: float = 0.10
     use_dbscan: bool = True
     dbscan_eps_m: float = 0.08
     dbscan_min_samples: int = 6
@@ -39,6 +40,7 @@ class PipelineConfig:
     corridor_half_width_m: float = 0.25
     corridor_check_distance_m: float = 1.80
     default_planner: str = "astar"
+    auto_frontier_route: bool = False
     proximity_penalty_weight: float = 3.5
 
     persistent_mapping: bool = True

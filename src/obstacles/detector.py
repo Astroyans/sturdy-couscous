@@ -141,6 +141,12 @@ class ObstacleDetector:
             heights = cand["heights"]
             obs_type: ObstacleType = cand["type"]
 
+            if pts.shape[0] < 3:
+                continue
+            extent_xy = max(float(np.ptp(pts[:, 0])), float(np.ptp(pts[:, 1])))
+            if extent_xy < self.config.min_obstacle_extent_m:
+                continue
+
             centroid = np.median(pts, axis=0)
             cx, cy, cz = float(centroid[0]), float(centroid[1]), float(centroid[2])
 

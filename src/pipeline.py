@@ -25,6 +25,7 @@ class TerrainNavigationPipeline:
         self.visual_odometry = RGBDVisualOdometry(self.config)
         self.planner_algorithm: str = self.config.default_planner
         self.navigation_mode: str = "EXPLORE_FORWARD"
+        self.target_goal_xy: Optional[tuple[float, float]] = None
         self._ema_fps: float = 0.0
         self._last_terrain: Optional[TerrainAnalysis] = None
 
@@ -54,9 +55,33 @@ class TerrainNavigationPipeline:
             return True
         return False
 
+    def set_navigation_mode(self, mode: str) -> str:
+        self.navigation_mode = (
+            "RETURN_TO_BASE" if mode == "RETURN_TO_BASE" else "EXPLORE_FORWARD"
+        )
+        return self.navigation_mode
+
+    def set_goal_world(self, x_m: float, y_m: float) -> tuple[float, float]:
+        self.target_goal_xy = (float(x_m), float(y_m))
+        return self.target_goal_xy
+
+    def set_goal_normalized(self, norm_x: float, norm_y: float) -> tuple[float, float]:
+        nx = max(0.0, min(1.0, float(norm_x)))
+        ny = max(0.0, min(1.0, float(norm_y)))
+        rows, cols = self.grid_builder.grid_shape
+        col = int(round(nx * (cols - 1)))
+        row = int(round((1.0 - ny) * (rows - 1)))
+        wx, wy = self.grid_builder.cell_to_world(row, col)
+        self.target_goal_xy = (wx, wy)
+        return self.target_goal_xy
+
+    def clear_goal(self) -> None:
+        self.target_goal_xy = None
+
     def reset_global_map(self) -> None:
         self.grid_builder.reset()
         self.visual_odometry.reset()
+        self.target_goal_xy = None
 
     def advance_pose_manually(
         self,
@@ -118,6 +143,7 @@ class TerrainNavigationPipeline:
             algorithm=self.planner_algorithm,
             pose=pose,
             navigation_mode=self.navigation_mode,
+            goal_world_xy=self.target_goal_xy,
         )
 
         dt = max(time.perf_counter() - t0, 1e-4)
@@ -136,5 +162,6 @@ class TerrainNavigationPipeline:
             edge_fps=self._ema_fps,
             rover_pose_xy_yaw=(pose.x_m, pose.y_m, pose.yaw_deg),
             traversed_distance_m=pose.total_distance_m,
+            frame_obstacles=frame_obstacles,
         )
         return output, boulder_mask, crevice_mask

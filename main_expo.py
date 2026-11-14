@@ -38,6 +38,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="URL del backend externo (ej. http://192.168.1.50:3000/api/telemetry o ws://192.168.1.50:3000/ws).",
     )
     parser.add_argument(
+        "--goal-url",
+        default=os.environ.get("DRONE_CV_GOAL_URL", ""),
+        help="URL HTTP GET opcional para recibir destino tocado por el astronauta en Expo Go.",
+    )
+    parser.add_argument(
         "--token",
         default=os.environ.get("DRONE_CV_AUTH_TOKEN", ""),
         help="Token Bearer opcional para autenticacion con el backend.",
@@ -57,13 +62,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--boulder-min-height",
         type=float,
-        default=0.045,
+        default=0.15,
         help="Altura minima en metros sobre el suelo para clasificar BOULDER.",
     )
     parser.add_argument(
         "--crevice-min-depth",
         type=float,
-        default=0.045,
+        default=0.15,
         help="Profundidad minima en metros bajo el suelo para clasificar CREVICE.",
     )
     parser.add_argument(
@@ -198,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         url=args.url,
         transport=args.transport,
         auth_token=args.token or None,
+        goal_url=args.goal_url,
     )
 
     effective_transport = (
@@ -213,6 +219,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         while True:
+            goal_cmd = sender.pop_goal_command()
+            if goal_cmd is not None:
+                if goal_cmd.get("clear"):
+                    pipeline.clear_goal()
+                elif "norm_x" in goal_cmd and "norm_y" in goal_cmd:
+                    pipeline.set_goal_normalized(goal_cmd["norm_x"], goal_cmd["norm_y"])
+                elif "x_m" in goal_cmd and "y_m" in goal_cmd:
+                    pipeline.set_goal_world(goal_cmd["x_m"], goal_cmd["y_m"])
+
             frame = camera.read_frame()
             output, b_mask, c_mask = pipeline.process_frame(frame)
             payload = build_expo_payload(
