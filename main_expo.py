@@ -27,13 +27,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--source",
         choices=["auto", "realsense", "raspi3", "synthetic"],
         default="auto",
-        help="Fuente de camara: 'realsense' (D415 USB), 'raspi3' (LAN TCP puerto 8766), 'synthetic' o 'auto'.",
+        help="Fuente de camara: 'realsense' (D415 USB), 'raspi3' (LAN UDP/TCP puerto 8766), 'synthetic' o 'auto'.",
+    )
+    parser.add_argument(
+        "--raspi-proto",
+        choices=["udp", "tcp"],
+        default="udp",
+        help="Protocolo de recepcion desde Raspberry Pi 3: 'udp' (R3U1 baja latencia) o 'tcp'.",
     )
     parser.add_argument(
         "--raspi-port",
         type=int,
         default=8766,
-        help="Puerto TCP de entrada para recibir RGB-D desde la Raspberry Pi 3 (por defecto 8766).",
+        help="Puerto de entrada para recibir RGB-D desde la Raspberry Pi 3 (por defecto 8766).",
     )
     parser.add_argument(
         "--raspi-host",
@@ -151,17 +157,19 @@ def create_and_start_camera(
     config: PipelineConfig,
     raspi_port: int = 8766,
     raspi_host: str = "",
+    raspi_proto: str = "udp",
 ):
     if source == "raspi3":
         cam = Raspi3ReceiverCamera(
             config=config,
             port=raspi_port,
             remote_host=raspi_host,
+            protocol=raspi_proto,
         )
         mode_desc = (
-            f"cliente -> {raspi_host}:{raspi_port}"
-            if raspi_host
-            else f"servidor TCP escuchando en 0.0.0.0:{raspi_port}"
+            f"cliente TCP -> {raspi_host}:{raspi_port}"
+            if (raspi_proto == "tcp" and raspi_host)
+            else f"escuchando {raspi_proto.upper()} en 0.0.0.0:{raspi_port}"
         )
         print(f"[INFO] Esperando stream de Raspberry Pi 3 ({mode_desc})...")
         cam.start(wait_for_first_frame=True)
@@ -333,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
             config,
             raspi_port=args.raspi_port,
             raspi_host=args.raspi_host,
+            raspi_proto=args.raspi_proto,
         )
     except RuntimeError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

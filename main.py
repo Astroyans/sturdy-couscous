@@ -9,6 +9,7 @@ import time
 import cv2
 import numpy as np
 
+from src.camera.raspi3_receiver import Raspi3ReceiverCamera
 from src.camera.realsense_d415 import RealSenseD415Camera
 from src.camera.synthetic import SyntheticTerrainCamera
 from src.config import PipelineConfig
@@ -22,9 +23,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        choices=["auto", "realsense", "synthetic"],
+        choices=["auto", "realsense", "raspi3", "synthetic"],
         default="auto",
-        help="Fuente de camara: 'realsense' (D415 USB-C), 'synthetic' (simulador 3D) o 'auto'.",
+        help="Fuente de camara: 'realsense' (D415 USB-C), 'raspi3' (LAN UDP/TCP), 'synthetic' (simulador 3D) o 'auto'.",
+    )
+    parser.add_argument(
+        "--raspi-proto",
+        choices=["udp", "tcp"],
+        default="udp",
+        help="Protocolo de recepcion desde Raspberry Pi 3: 'udp' (R3U1) o 'tcp'.",
+    )
+    parser.add_argument(
+        "--raspi-port",
+        type=int,
+        default=8766,
+        help="Puerto de entrada para recibir datos desde la Raspberry Pi 3.",
+    )
+    parser.add_argument(
+        "--raspi-host",
+        default="",
+        help="IP opcional de la Raspberry Pi 3 si se conecta por TCP cliente.",
     )
     parser.add_argument(
         "--planner",
@@ -115,7 +133,27 @@ def main(argv: list[str] | None = None) -> int:
     camera = None
     source_label = ""
 
-    if args.source in ("auto", "realsense"):
+    if args.source == "raspi3":
+        try:
+            r3_cam = Raspi3ReceiverCamera(
+                config=config,
+                port=args.raspi_port,
+                remote_host=args.raspi_host,
+                protocol=args.raspi_proto,
+            )
+            print(
+                f"[INFO] Esperando stream de Raspberry Pi 3 "
+                f"({args.raspi_proto.upper()} puerto {args.raspi_port})..."
+            )
+            r3_cam.start(wait_for_first_frame=True)
+            camera = r3_cam
+            source_label = r3_cam.device_name
+            print(f"[INFO] Enlace Raspi 3 activo: {source_label}")
+        except Exception as exc:
+            print(f"[ERROR] No se pudo recibir desde Raspi 3: {exc}", file=sys.stderr)
+            return 1
+
+    if camera is None and args.source in ("auto", "realsense"):
         try:
             rs_cam = RealSenseD415Camera(config)
             rs_cam.start()

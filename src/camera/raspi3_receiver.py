@@ -15,8 +15,13 @@ from src.config import PipelineConfig
 from src.models import CameraIntrinsics, FrameBundle
 
 PACKET_MAGIC = b"R3D1"
+UDP_CHUNK_MAGIC = b"R3U1"
+UDP_ACK_MAGIC = b"R3C1"
+
 _HEADER_STRUCT = struct.Struct("!4sI")
 _LEN_STRUCT = struct.Struct("!I")
+_UDP_CHUNK_STRUCT = struct.Struct("!4sIIHHH")
+_UDP_ACK_STRUCT = struct.Struct("!4sIH")
 _MAX_PACKET_BYTES = 16 * 1024 * 1024
 
 
@@ -80,6 +85,31 @@ def encode_raspi3_packet(
     )
 
 
+def unpack_r3d1_payload(payload: bytes) -> tuple[bytes, bytes, bytes]:
+    if len(payload) < _HEADER_STRUCT.size + 8:
+        raise ValueError("Payload R3D1 incompleto.")
+    magic, header_len = _HEADER_STRUCT.unpack_from(payload, 0)
+    if magic != PACKET_MAGIC or header_len <= 0 or header_len > 65536:
+        raise ValueError("Cabecera R3D1 invalida.")
+    pos = _HEADER_STRUCT.size
+    header_bytes = payload[pos : pos + header_len]
+    pos += header_len
+    if pos + 4 > len(payload):
+        raise ValueError("Falta longitud de color R3D1.")
+    (color_len,) = _LEN_STRUCT.unpack_from(payload, pos)
+    pos += 4
+    color_bytes = payload[pos : pos + color_len]
+    pos += color_len
+    if pos + 4 > len(payload):
+        raise ValueError("Falta longitud de depth R3D1.")
+    (depth_len,) = _LEN_STRUCT.unpack_from(payload, pos)
+    pos += 4
+    depth_bytes = payload[pos : pos + depth_len]
+    if len(header_bytes) != header_len or len(color_bytes) != color_len or len(depth_bytes) != depth_len:
+        raise ValueError("Payload R3D1 truncado.")
+    return header_bytes, color_bytes, depth_bytes
+
+
 def decode_raspi3_packet(
     header_bytes: bytes,
     color_bytes: bytes,
@@ -136,6 +166,121 @@ def decode_raspi3_packet(
     return bundle, net_latency_ms
 
 
+def encode_udp_chunks(
+    payload: bytes,
+    frame_id: int,
+    max_chunk_bytes: int = 1200,
+) -> list[bytes]:
+    total_bytes = len(payload)
+    if total_bytes == 0:
+        return []
+    step = max(256, min(1400, int(max_chunk_bytes)))
+    total_chunks = (total_bytes + step - 1) // step
+    chunks: list[bytes] = []
+    fid = int(frame_id) & 0xFFFFFFFF
+    for idx in range(total_chunks):
+        start = idx * step
+        part = payload[start : start + step]
+        head = _UDP_CHUNK_STRUCT.pack(
+            UDP_CHUNK_MAGIC,
+            fid,
+            total_bytes,
+            idx,
+            total_chunks,
+            len(part),
+        )
+        chunks.append(head + part)
+    return chunks
+
+
+class UdpFrameReassembler:
+    def __init__(
+        self,
+        max_inflight: int = 4,
+        frame_timeout_s: float = 0.25,
+    ) -> None:
+        self.max_inflight = max(2, int(max_inflight))
+        self.frame_timeout_s = float(frame_timeout_s)
+        self._frames: dict[int, dict[str, Any]] = {}
+        self.last_completed_id: int = -1
+        self.completed_frames: int = 0
+        self.dropped_frames: int = 0
+
+    @property
+    def loss_pct(self) -> float:
+        total = self.completed_frames + self.dropped_frames
+        if total <= 0:
+            return 0.0
+        return (self.dropped_frames / float(total)) * 100.0
+
+    def _prune(self, now: float) -> None:
+        stale = [
+            fid
+            for fid, entry in self._frames.items()
+            if (now - entry["created"]) > self.frame_timeout_s
+        ]
+        for fid in stale:
+            self._frames.pop(fid, None)
+            self.dropped_frames += 1
+
+        while len(self._frames) > self.max_inflight:
+            oldest_fid = min(self._frames.keys())
+            self._frames.pop(oldest_fid, None)
+            self.dropped_frames += 1
+
+    def feed_datagram(self, datagram: bytes) -> Optional[tuple[int, bytes]]:
+        if len(datagram) < _UDP_CHUNK_STRUCT.size:
+            return None
+        magic, frame_id, total_bytes, chunk_idx, total_chunks, payload_len = (
+            _UDP_CHUNK_STRUCT.unpack_from(datagram, 0)
+        )
+        if magic != UDP_CHUNK_MAGIC or total_chunks == 0 or chunk_idx >= total_chunks:
+            return None
+        if total_bytes <= 0 or total_bytes > _MAX_PACKET_BYTES:
+            return None
+
+        part = datagram[_UDP_CHUNK_STRUCT.size :]
+        if len(part) != payload_len:
+            return None
+
+        if frame_id <= self.last_completed_id and (self.last_completed_id - frame_id) < 10000:
+            return None
+
+        now = time.monotonic()
+        self._prune(now)
+
+        entry = self._frames.get(frame_id)
+        if entry is None:
+            entry = {
+                "created": now,
+                "total_bytes": total_bytes,
+                "total_chunks": total_chunks,
+                "chunks": {},
+            }
+            self._frames[frame_id] = entry
+        elif entry["total_bytes"] != total_bytes or entry["total_chunks"] != total_chunks:
+            return None
+
+        entry["chunks"][chunk_idx] = part
+        if len(entry["chunks"]) < total_chunks:
+            return None
+
+        self._frames.pop(frame_id, None)
+        assembled = b"".join(entry["chunks"][i] for i in range(total_chunks))
+        if len(assembled) != total_bytes:
+            self.dropped_frames += 1
+            return None
+
+        obsolete = [fid for fid in self._frames if fid < frame_id]
+        for fid in obsolete:
+            self._frames.pop(fid, None)
+            self.dropped_frames += 1
+
+        self.last_completed_id = frame_id
+        self.completed_frames += 1
+        return frame_id, assembled
+
+
 def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
     if n == 0:
         return b""
@@ -167,20 +312,25 @@ class Raspi3ReceiverCamera:
         listen_host: str = "0.0.0.0",
         port: int = 8766,
         remote_host: str = "",
+        protocol: str = "udp",
         wait_timeout_s: float = 15.0,
     ) -> None:
         self.config = config or PipelineConfig()
         self.listen_host = listen_host
         self.port = int(port)
         self.remote_host = remote_host.strip()
+        self.protocol = protocol.lower().strip()
+        if self.protocol not in ("udp", "tcp"):
+            raise ValueError("protocol debe ser 'udp' o 'tcp'.")
         self.wait_timeout_s = float(wait_timeout_s)
 
-        self.device_name = "Raspberry Pi 3 -> RealSense D415 (LAN)"
-        self.usb_type = "LAN-TCP"
+        self.device_name = f"Raspberry Pi 3 -> RealSense D415 (LAN-{self.protocol.upper()})"
+        self.usb_type = f"LAN-{self.protocol.upper()}"
         self.connected = False
         self.net_latency_ms = 0.0
         self.rx_fps = 0.0
         self.rx_kbps = 0.0
+        self.packet_loss_pct = 0.0
         self.frames_received = 0
         self.last_rx_time = 0.0
 
@@ -192,7 +342,7 @@ class Raspi3ReceiverCamera:
         self._thread: Optional[threading.Thread] = None
         self._running = False
 
-    def _consume_connection(self, conn: socket.socket) -> None:
+    def _consume_tcp_connection(self, conn: socket.socket) -> None:
         _configure_tcp_socket(conn, timeout_s=5.0)
         self._active_sock = conn
         self.connected = True
@@ -267,7 +417,69 @@ class Raspi3ReceiverCamera:
             except OSError:
                 pass
 
-    def _rx_loop(self) -> None:
+    def _rx_udp_loop(self) -> None:
+        sock = self._server_sock
+        if sock is None:
+            return
+        reassembler = UdpFrameReassembler(max_inflight=4, frame_timeout_s=0.25)
+        fps_t0 = time.perf_counter()
+        fps_frames = 0
+        fps_bytes = 0
+
+        while self._running:
+            try:
+                datagram, addr = sock.recvfrom(2048)
+            except socket.timeout:
+                if self.last_rx_time > 0 and (time.time() - self.last_rx_time) > 2.5:
+                    self.connected = False
+                continue
+            except OSError:
+                break
+
+            fps_bytes += len(datagram)
+            completed = reassembler.feed_datagram(datagram)
+            if completed is None:
+                continue
+
+            frame_id, payload = completed
+            try:
+                header_bytes, color_bytes, depth_bytes = unpack_r3d1_payload(payload)
+                bundle, latency_ms = decode_raspi3_packet(
+                    header_bytes=header_bytes,
+                    color_bytes=color_bytes,
+                    depth_bytes=depth_bytes,
+                    default_pitch_deg=self.config.nominal_camera_pitch_deg,
+                )
+            except (ValueError, zlib.error, RuntimeError):
+                continue
+
+            with self._lock:
+                self._latest_bundle = bundle
+            self._frame_ready.set()
+
+            self.connected = True
+            self.frames_received += 1
+            self.last_rx_time = time.time()
+            self.net_latency_ms = latency_ms
+            self.packet_loss_pct = reassembler.loss_pct
+
+            try:
+                loss_x100 = int(min(65535, round(reassembler.loss_pct * 100.0)))
+                ack = _UDP_ACK_STRUCT.pack(UDP_ACK_MAGIC, frame_id & 0xFFFFFFFF, loss_x100)
+                sock.sendto(ack, addr)
+            except OSError:
+                pass
+
+            fps_frames += 1
+            dt = time.perf_counter() - fps_t0
+            if dt >= 1.0:
+                self.rx_fps = fps_frames / dt
+                self.rx_kbps = (fps_bytes * 8.0 / 1000.0) / dt
+                fps_t0 = time.perf_counter()
+                fps_frames = 0
+                fps_bytes = 0
+
+    def _rx_tcp_loop(self) -> None:
         while self._running:
             if self.remote_host:
                 sock: Optional[socket.socket] = None
@@ -275,7 +487,7 @@ class Raspi3ReceiverCamera:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.settimeout(3.0)
                     sock.connect((self.remote_host, self.port))
-                    self._consume_connection(sock)
+                    self._consume_tcp_connection(sock)
                 except OSError:
                     if sock is not None:
                         try:
@@ -294,22 +506,36 @@ class Raspi3ReceiverCamera:
                     if self._running:
                         time.sleep(0.1)
                     continue
-                self._consume_connection(conn)
+                self._consume_tcp_connection(conn)
 
     def start(self, wait_for_first_frame: bool = True) -> None:
         if self._running:
             return
-        if not self.remote_host:
-            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if self.protocol == "udp":
+            srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)
+            except OSError:
+                pass
             srv.bind((self.listen_host, self.port))
-            srv.listen(2)
             srv.settimeout(0.5)
             self.port = int(srv.getsockname()[1])
             self._server_sock = srv
+            target_loop = self._rx_udp_loop
+        else:
+            if not self.remote_host:
+                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                srv.bind((self.listen_host, self.port))
+                srv.listen(2)
+                srv.settimeout(0.5)
+                self.port = int(srv.getsockname()[1])
+                self._server_sock = srv
+            target_loop = self._rx_tcp_loop
 
         self._running = True
-        self._thread = threading.Thread(target=self._rx_loop, daemon=True)
+        self._thread = threading.Thread(target=target_loop, daemon=True)
         self._thread.start()
 
         if wait_for_first_frame:
@@ -318,7 +544,7 @@ class Raspi3ReceiverCamera:
                 target = (
                     f"{self.remote_host}:{self.port}"
                     if self.remote_host
-                    else f"0.0.0.0:{self.port}"
+                    else f"0.0.0.0:{self.port} ({self.protocol.upper()})"
                 )
                 raise RuntimeError(
                     f"Timeout ({self.wait_timeout_s:.1f}s) esperando stream de la Raspi 3 en {target}."
