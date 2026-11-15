@@ -5,6 +5,12 @@ import socket
 import threading
 import time
 
+# Edita aqui la IP de la Laptop Rover destino (donde corre main.py / main_expo.py)
+TARGET_IP = "192.168.1.100"
+TARGET_PORT = 8766
+LISTEN_HOST = "0.0.0.0"
+LISTEN_PORT = 8766
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -13,23 +19,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--listen-port",
         type=int,
-        default=8766,
+        default=LISTEN_PORT,
         help="Puerto UDP donde esta laptop puente recibe los paquetes desde la Raspi 3.",
     )
     parser.add_argument(
         "--target-ip",
-        required=True,
-        help="IP LAN de la Laptop Rover destino (donde corre main.py / main_expo.py).",
+        default=TARGET_IP,
+        help=f"IP LAN de la Laptop Rover destino (por defecto TARGET_IP={TARGET_IP}).",
     )
     parser.add_argument(
         "--target-port",
         type=int,
-        default=8766,
-        help="Puerto UDP destino en la Laptop Rover (por defecto 8766).",
+        default=TARGET_PORT,
+        help=f"Puerto UDP destino en la Laptop Rover (por defecto {TARGET_PORT}).",
     )
     parser.add_argument(
         "--listen-host",
-        default="0.0.0.0",
+        default=LISTEN_HOST,
         help="Interfaz local donde escuchar (por defecto 0.0.0.0).",
     )
     return parser.parse_args(argv)

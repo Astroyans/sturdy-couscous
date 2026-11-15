@@ -18,6 +18,12 @@ from src.transport.client import TelemetrySender
 from src.transport.media import build_expo_payload, build_map_state_payload
 from src.transport.server import ExpoLANServer, get_local_lan_ip
 
+# Configuracion de red: entrada Raspi 3 / Puente (8766) y salida Dashboard (8765)
+RASPI_LISTEN_HOST = "0.0.0.0"
+RASPI_PORT = 8766
+RASPI_REMOTE_IP = ""
+EXPO_PORT = 8765
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -38,12 +44,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--raspi-port",
         type=int,
-        default=8766,
+        default=RASPI_PORT,
         help="Puerto de entrada para recibir RGB-D desde la Raspberry Pi 3 (por defecto 8766).",
     )
     parser.add_argument(
         "--raspi-host",
-        default="",
+        default=RASPI_REMOTE_IP,
         help="IP opcional de la Raspberry Pi 3 si la laptop se conecta como cliente TCP en lugar de escuchar.",
     )
     parser.add_argument(
@@ -84,7 +90,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--http-port",
         dest="http_port",
         type=int,
-        default=8765,
+        default=EXPO_PORT,
         help="Puerto unificado LAN (WebSocket + HTTP en el mismo puerto, por defecto 8765 para full-stack).",
     )
     parser.add_argument(
@@ -162,6 +168,7 @@ def create_and_start_camera(
     if source == "raspi3":
         cam = Raspi3ReceiverCamera(
             config=config,
+            listen_host=RASPI_LISTEN_HOST,
             port=raspi_port,
             remote_host=raspi_host,
             protocol=raspi_proto,

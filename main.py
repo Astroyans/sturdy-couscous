@@ -16,6 +16,11 @@ from src.config import PipelineConfig
 from src.pipeline import TerrainNavigationPipeline
 from src.visualization.hud import HUDRenderer
 
+# Configuracion de red para recepcion desde Raspi 3 / Laptop Puente
+RASPI_LISTEN_HOST = "0.0.0.0"
+RASPI_PORT = 8766
+RASPI_REMOTE_IP = ""
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -36,13 +41,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--raspi-port",
         type=int,
-        default=8766,
+        default=RASPI_PORT,
         help="Puerto de entrada para recibir datos desde la Raspberry Pi 3.",
     )
     parser.add_argument(
         "--raspi-host",
-        default="",
-        help="IP opcional de la Raspberry Pi 3 si se conecta por TCP cliente.",
+        default=RASPI_REMOTE_IP,
+        help="IP opcional de la Raspberry Pi 3 / Puente si se conecta por TCP cliente.",
     )
     parser.add_argument(
         "--planner",
@@ -137,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             r3_cam = Raspi3ReceiverCamera(
                 config=config,
+                listen_host=RASPI_LISTEN_HOST,
                 port=args.raspi_port,
                 remote_host=args.raspi_host,
                 protocol=args.raspi_proto,

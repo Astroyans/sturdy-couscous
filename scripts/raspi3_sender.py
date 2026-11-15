@@ -18,6 +18,10 @@ except ImportError:  # pragma: no cover
 PACKET_MAGIC = b"R3D1"
 UDP_CHUNK_MAGIC = b"R3U1"
 UDP_ACK_MAGIC = b"R3C1"
+
+# Edita aqui la IP de la laptop destino (Laptop Puente o Laptop Rover)
+TARGET_IP = "192.168.1.100"
+TARGET_PORT = 8766
 _HEADER_STRUCT = struct.Struct("!4sI")
 _LEN_STRUCT = struct.Struct("!I")
 _UDP_CHUNK_STRUCT = struct.Struct("!4sIIHHH")
@@ -30,14 +34,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--laptop-ip",
-        required=True,
-        help="IP LAN de la Laptop Rover ejecutando --source raspi3.",
+        default=TARGET_IP,
+        help=f"IP LAN de la Laptop destino (por defecto TARGET_IP={TARGET_IP}).",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8766,
-        help="Puerto de entrada en la Laptop Rover (por defecto 8766).",
+        default=TARGET_PORT,
+        help=f"Puerto de entrada en la Laptop destino (por defecto {TARGET_PORT}).",
     )
     parser.add_argument(
         "--protocol",
