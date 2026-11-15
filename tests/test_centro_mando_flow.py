@@ -238,3 +238,21 @@ def test_centro_mando_station_fallback_to_satellite_and_scan_request(tmp_path):
         station_sock.close()
         sat_srv.close()
         astro_sock.close()
+
+
+def test_expo_server_accepts_nested_request_route_target():
+    from src.transport.server import ExpoLANServer
+
+    srv = ExpoLANServer(http_port=0)
+    ok = srv._push_goal_command(
+        json.dumps(
+            {
+                "action": "request_route",
+                "unit": "meters",
+                "target": {"x_m": 1.25, "y_m": -0.75},
+            }
+        )
+    )
+    assert ok is True
+    cmd = srv.pop_goal_command()
+    assert cmd == {"x_m": 1.25, "y_m": -0.75}
