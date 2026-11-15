@@ -154,6 +154,68 @@ def test_raspi3_receiver_udp_mode_streams_and_sends_ack():
         tx_thread.join(timeout=1.0)
 
 
+def test_udp_bridge_relays_chunks_and_acks_zero_copy():
+    cfg = PipelineConfig(width=320, height=240, nominal_camera_pitch_deg=-90.0)
+    syn = SyntheticTerrainCamera(cfg)
+    syn.start()
+    sample = syn.read_frame()
+    syn.stop()
+
+    receiver = Raspi3ReceiverCamera(
+        config=cfg,
+        listen_host="127.0.0.1",
+        port=0,
+        protocol="udp",
+        wait_timeout_s=5.0,
+    )
+    receiver.start(wait_for_first_frame=False)
+
+    bridge_rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    bridge_rx.bind(("127.0.0.1", 0))
+    bridge_port = bridge_rx.getsockname()[1]
+    bridge_rx.close()
+
+    from scripts.udp_bridge import run_udp_bridge
+
+    stop_bridge = threading.Event()
+    b_thread = threading.Thread(
+        target=run_udp_bridge,
+        args=("127.0.0.1", bridge_port, "127.0.0.1", receiver.port, stop_bridge),
+        daemon=True,
+    )
+    b_thread.start()
+    time.sleep(0.15)
+
+    ack_seen = []
+    try:
+        pkt = encode_raspi3_packet(
+            depth_m=sample.depth_m,
+            intrinsics=sample.intrinsics,
+            color_bgr=sample.color_bgr,
+            imu_pitch=-90.0,
+        )
+        chunks = encode_udp_chunks(pkt, frame_id=7, max_chunk_bytes=1200)
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sender.settimeout(2.0)
+        try:
+            for ch in chunks:
+                sender.sendto(ch, ("127.0.0.1", bridge_port))
+            ack_data, _ = sender.recvfrom(64)
+            ack_seen.append(ack_data)
+        finally:
+            sender.close()
+
+        assert len(ack_seen) == 1
+        assert ack_seen[0][:4] == UDP_ACK_MAGIC
+        assert receiver.frames_received >= 1
+        frame = receiver.read_frame(timeout_ms=1000)
+        assert frame.depth_m.shape == (240, 320)
+    finally:
+        stop_bridge.set()
+        b_thread.join(timeout=1.0)
+        receiver.stop()
+
+
 def test_raspi3_receiver_tcp_server_mode_feeds_pipeline():
     cfg = PipelineConfig(width=320, height=240, nominal_camera_pitch_deg=-90.0)
     syn = SyntheticTerrainCamera(cfg)
@@ -200,3 +262,65 @@ def test_raspi3_receiver_tcp_server_mode_feeds_pipeline():
     finally:
         receiver.stop()
         tx_thread.join(timeout=1.0)
+
+
+def test_udp_bridge_relays_chunks_and_acks_zero_copy():
+    cfg = PipelineConfig(width=320, height=240, nominal_camera_pitch_deg=-90.0)
+    syn = SyntheticTerrainCamera(cfg)
+    syn.start()
+    sample = syn.read_frame()
+    syn.stop()
+
+    receiver = Raspi3ReceiverCamera(
+        config=cfg,
+        listen_host="127.0.0.1",
+        port=0,
+        protocol="udp",
+        wait_timeout_s=5.0,
+    )
+    receiver.start(wait_for_first_frame=False)
+
+    bridge_rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    bridge_rx.bind(("127.0.0.1", 0))
+    bridge_port = bridge_rx.getsockname()[1]
+    bridge_rx.close()
+
+    from scripts.udp_bridge import run_udp_bridge
+
+    stop_bridge = threading.Event()
+    b_thread = threading.Thread(
+        target=run_udp_bridge,
+        args=("127.0.0.1", bridge_port, "127.0.0.1", receiver.port, stop_bridge),
+        daemon=True,
+    )
+    b_thread.start()
+    time.sleep(0.15)
+
+    ack_seen = []
+    try:
+        pkt = encode_raspi3_packet(
+            depth_m=sample.depth_m,
+            intrinsics=sample.intrinsics,
+            color_bgr=sample.color_bgr,
+            imu_pitch=-90.0,
+        )
+        chunks = encode_udp_chunks(pkt, frame_id=7, max_chunk_bytes=1200)
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sender.settimeout(2.0)
+        try:
+            for ch in chunks:
+                sender.sendto(ch, ("127.0.0.1", bridge_port))
+            ack_data, _ = sender.recvfrom(64)
+            ack_seen.append(ack_data)
+        finally:
+            sender.close()
+
+        assert len(ack_seen) == 1
+        assert ack_seen[0][:4] == UDP_ACK_MAGIC
+        assert receiver.frames_received >= 1
+        frame = receiver.read_frame(timeout_ms=1000)
+        assert frame.depth_m.shape == (240, 320)
+    finally:
+        stop_bridge.set()
+        b_thread.join(timeout=1.0)
+        receiver.stop()
