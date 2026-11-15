@@ -324,3 +324,32 @@ def test_udp_bridge_relays_chunks_and_acks_zero_copy():
         stop_bridge.set()
         b_thread.join(timeout=1.0)
         receiver.stop()
+
+
+def test_decode_raspi3_packet_falls_back_on_corrupt_jpeg():
+    cfg = PipelineConfig(width=320, height=240, nominal_camera_pitch_deg=-90.0)
+    syn = SyntheticTerrainCamera(cfg)
+    syn.start()
+    frame = syn.read_frame()
+    syn.stop()
+
+    pkt = encode_raspi3_packet(
+        depth_m=frame.depth_m,
+        intrinsics=frame.intrinsics,
+        color_bgr=frame.color_bgr,
+    )
+    h_len = int.from_bytes(pkt[4:8], "big")
+    pos = 8
+    header_bytes = pkt[pos : pos + h_len]
+    pos += h_len
+    c_len = int.from_bytes(pkt[pos : pos + 4], "big")
+    pos += 4 + c_len
+    d_len = int.from_bytes(pkt[pos : pos + 4], "big")
+    pos += 4
+    depth_bytes = pkt[pos : pos + d_len]
+
+    corrupt_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 200
+    decoded, _ = decode_raspi3_packet(header_bytes, corrupt_jpeg, depth_bytes)
+    assert decoded.color_bgr.shape == (240, 320, 3)
+    assert decoded.depth_m.shape == (240, 320)
+

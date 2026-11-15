@@ -218,8 +218,14 @@ def create_and_start_camera(
             if (raspi_proto == "tcp" and raspi_host)
             else f"escuchando {raspi_proto.upper()} en 0.0.0.0:{raspi_port}"
         )
-        print(f"[INFO] Esperando stream de Raspberry Pi 3 ({mode_desc})...")
-        cam.start(wait_for_first_frame=True)
+        print(f"[INFO] Esperando stream de Raspberry Pi 3 ({mode_desc}) sin timeout...")
+        cam.start(wait_for_first_frame=False)
+        try:
+            while cam.frames_received == 0:
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            cam.stop()
+            raise RuntimeError("Espera de stream de Raspberry Pi 3 cancelada por el usuario.")
         print(f"[INFO] Enlace Raspi 3 activo: {cam.device_name}")
         return cam, "raspi3"
 

@@ -125,16 +125,17 @@ def decode_raspi3_packet(
     depth_u16 = np.frombuffer(raw_depth, dtype=np.uint16).reshape((h, w))
     depth_m = depth_u16.astype(np.float32) * depth_scale
 
+    color_bgr: Optional[np.ndarray] = None
     if color_bytes and not meta.get("depth_only", False):
         arr = np.frombuffer(color_bytes, dtype=np.uint8)
         decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if decoded is None:
-            raise RuntimeError("Frame JPEG corrupto recibido desde Raspi3.")
-        if (decoded.shape[1], decoded.shape[0]) != (w, h):
-            color_bgr = cv2.resize(decoded, (w, h), interpolation=cv2.INTER_LINEAR)
-        else:
-            color_bgr = decoded
-    else:
+        if decoded is not None:
+            if (decoded.shape[1], decoded.shape[0]) != (w, h):
+                color_bgr = cv2.resize(decoded, (w, h), interpolation=cv2.INTER_LINEAR)
+            else:
+                color_bgr = decoded
+
+    if color_bgr is None:
         norm = np.clip((depth_m - 0.25) / 3.0, 0.0, 1.0)
         gray = ((1.0 - norm) * 235.0).astype(np.uint8)
         color_bgr = cv2.applyColorMap(gray, cv2.COLORMAP_BONE)
