@@ -12,17 +12,19 @@ Repositorio oficial del módulo de visión por computadora, mapeo topográfico p
 
 ### 1. Nodo Real para Expo Go en iPad A16 (`main_expo.py` — sin ventana OpenCV)
 ```powershell
-# Levanta servidor LAN directo hacia el iPad (HTTP :8000 y WebSocket :8001) con cámara a -90°
-python main_expo.py
+# Levanta servidor LAN unificado (HTTP + WebSocket en :8765) recibiendo desde Raspi 3 (UDP :8766)
+python main_expo.py --source raspi3 --raspi-proto udp --raspi-port 8766
 
 # Enviar además a un backend externo (HTTP POST o WebSocket)
-python main_expo.py --transport http --url http://<IP-BACKEND>:3000/api/telemetry
-python main_expo.py --transport ws --url ws://<IP-BACKEND>:3000/ws
+python main_expo.py --transport http --url http://<IP-BACKEND>:8764/api/ingest
+python main_expo.py --transport ws --url ws://<IP-BACKEND>:8764
 ```
-Endpoints locales expuestos automáticamente en la IP LAN de la laptop:
-- `ws://<IP-LAPTOP>:8001` — Streaming WebSocket en vivo (`node`, `timestamp`, `data`, `images.rgb`, `images.depth`, `images.route_map`) y recepción de destino.
-- `GET http://<IP-LAPTOP>:8000/api/latest` — Último paquete completo JSON + 3 imágenes JPEG en `data:image/jpeg;base64,...`.
-- `POST http://<IP-LAPTOP>:8000/api/goal` — Fijar destino al tocar el mapa en el iPad (`{"norm_x": 0.5, "norm_y": 0.2}`, `{"x_m": 0.5, "y_m": 1.2}` o `{"clear": true}`).
+Puertos y endpoints expuestos automáticamente en la IP LAN de la laptop:
+- `ws://<IP-LAPTOP>:8765` — Streaming WebSocket en vivo (`node`, `timestamp`, `data`, `images.rgb`, `images.depth`, `images.route_map`) y recepción de destino.
+- `GET http://<IP-LAPTOP>:8765/latest_expo_payload.json` — Último paquete completo JSON + 3 imágenes JPEG en `data:image/jpeg;base64,...`.
+- `GET http://<IP-LAPTOP>:8765/map_state.json` — Estado del mapa topográfico persistente.
+- `POST http://<IP-LAPTOP>:8765/api/goal` — Fijar destino al tocar el mapa en el iPad (`{"norm_x": 0.5, "norm_y": 0.2}`, `{"x_m": 0.5, "y_m": 1.2}` o `{"clear": true}`).
+- **Puertos dedicados sin conflicto:** `8764` (ingesta Dashboard `/api/ingest`), `8765` (ExpoLANServer HTTP+WS), `8766` (entrada Raspi 3 UDP/TCP), `8767` (UDP RPi Centro de Mando), `8769` (UDP Dispositivo Astronauta).
 
 ### 2. Dashboard Local de Diagnóstico OpenCV (`main.py`)
 ```powershell

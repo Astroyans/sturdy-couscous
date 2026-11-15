@@ -191,9 +191,10 @@ class ExpoLANServer:
             data = json.loads(raw_msg) if isinstance(raw_msg, (str, bytes)) else raw_msg
             if not isinstance(data, dict):
                 return False
-            if any(k in data for k in ("x_m", "y_m", "norm_x", "norm_y", "clear")):
+            candidate = data.get("target") if isinstance(data.get("target"), dict) else data
+            if any(k in candidate for k in ("x_m", "y_m", "norm_x", "norm_y", "clear")):
                 with self._goal_lock:
-                    self._pending_goal_cmd = data
+                    self._pending_goal_cmd = candidate
                 return True
         except Exception:
             pass
