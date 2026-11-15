@@ -6,7 +6,7 @@ import threading
 import time
 
 # Edita aqui la IP de la Laptop Rover destino (donde corre main.py / main_expo.py)
-TARGET_IP = "192.168.1.100"
+TARGET_IP = "172.18.0.165"
 TARGET_PORT = 8766
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 8766

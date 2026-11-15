@@ -20,7 +20,7 @@ UDP_CHUNK_MAGIC = b"R3U1"
 UDP_ACK_MAGIC = b"R3C1"
 
 # Edita aqui la IP de la laptop destino (Laptop Puente o Laptop Rover)
-TARGET_IP = "192.168.1.100"
+TARGET_IP = "172.18.0.165"
 TARGET_PORT = 8766
 _HEADER_STRUCT = struct.Struct("!4sI")
 _LEN_STRUCT = struct.Struct("!I")

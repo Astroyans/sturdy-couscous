@@ -18,11 +18,17 @@ from src.transport.client import TelemetrySender
 from src.transport.media import build_expo_payload, build_map_state_payload
 from src.transport.server import ExpoLANServer, get_local_lan_ip
 
-# Configuracion de red: entrada Raspi 3 / Puente (8766) y salida Dashboard (8765)
+# Configuracion de red: entrada Raspi 3 / Puente (8766) y salida Dashboard (8765 / 8766)
 RASPI_LISTEN_HOST = "0.0.0.0"
 RASPI_PORT = 8766
 RASPI_REMOTE_IP = ""
 EXPO_PORT = 8765
+
+# IP y puerto de ingesta del Dashboard remoto (full-stack INBOUND_PORT)
+DASHBOARD_IP = "172.20.10.7"
+DASHBOARD_INGEST_PORT = 8766
+DASHBOARD_TRANSPORT = "http"
+DASHBOARD_URL = f"http://{DASHBOARD_IP}:{DASHBOARD_INGEST_PORT}/api/ingest"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -55,13 +61,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--transport",
         choices=["http", "ws", "dry-run"],
-        default=os.environ.get("DRONE_CV_TRANSPORT", "http"),
+        default=os.environ.get("DRONE_CV_TRANSPORT", DASHBOARD_TRANSPORT),
         help="Protocolo de envio al backend externo: 'http' (POST JSON), 'ws' (WebSocket) o 'dry-run'.",
     )
     parser.add_argument(
         "--url",
-        default=os.environ.get("DRONE_CV_BACKEND_URL", ""),
-        help="URL del backend externo (ej. http://192.168.1.50:3000/api/telemetry o ws://192.168.1.50:3000/ws).",
+        default=os.environ.get("DRONE_CV_BACKEND_URL", DASHBOARD_URL),
+        help="URL del backend externo (ej. http://172.18.0.165:8766/api/ingest o ws://172.18.0.165:8766).",
     )
     parser.add_argument(
         "--goal-url",
