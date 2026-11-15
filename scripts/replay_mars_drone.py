@@ -192,12 +192,17 @@ def main(argv: list[str] | None = None) -> int:
         while args.max_frames <= 0 or sent < args.max_frames:
             idx = sent % n
             color_bgr, depth_m, intr = frames[idx]
+            # Ciclo vertical realista: EN TIERRA (0.25m) -> ASCENDIENDO -> ESCANEANDO (2.45m)
+            flight_alt = 1.35 + 1.10 * float(np.sin(sent * 0.025))
+            depth_live = np.clip(depth_m + (flight_alt - float(args.target_altitude)), 0.22, 4.0).astype(
+                np.float32
+            )
             yaw = float(4.0 * np.sin(sent * 0.05))
             pitch = float(-90.0 + 1.5 * np.cos(sent * 0.04))
             roll = float(1.2 * np.sin(sent * 0.03))
 
             payload = encode_raspi3_packet(
-                depth_m=depth_m,
+                depth_m=depth_live,
                 intrinsics=intr,
                 color_bgr=color_bgr,
                 timestamp=time.time(),
