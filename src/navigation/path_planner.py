@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import heapq
 import math
+import time
+import zlib
 from typing import Optional
 
 import numpy as np
@@ -38,6 +40,19 @@ class PathPlanner:
     ) -> None:
         self.config = config or PipelineConfig()
         self.grid_builder = grid_builder or OccupancyGridBuilder(self.config)
+        self._route_cache: Optional[dict] = None
+
+    REPLAN_MIN_INTERVAL_S = 0.5
+
+    @staticmethod
+    def _path_still_valid(path_cells: list[tuple[int, int]], blocked_mask: np.ndarray) -> bool:
+        if not path_cells:
+            return True
+        rows, cols = blocked_mask.shape
+        for r, c in path_cells:
+            if not (0 <= r < rows and 0 <= c < cols) or blocked_mask[r, c]:
+                return False
+        return True
 
     @staticmethod
     def _is_blocked(cell_value: int) -> bool:
@@ -207,53 +222,69 @@ class PathPlanner:
         current_pose = pose or Pose2D()
         current_cell = self.grid_builder.world_to_cell(current_pose.x_m, current_pose.y_m)
 
+        blocked_mask = (
+            (occupancy_grid == GRID_BOULDER)
+            | (occupancy_grid == GRID_CREVICE)
+            | (occupancy_grid == GRID_STEEP)
+            | (~np.isfinite(cost_grid))
+        )
+        mask_sig = zlib.adler32(np.packbits(blocked_mask).tobytes())
         if goal_world_xy is not None:
             target_cell = self.grid_builder.world_to_cell(goal_world_xy[0], goal_world_xy[1])
-            nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
-            astar_cells, astar_exp, astar_reached = self._run_search(
-                occupancy_grid,
-                cost_grid,
-                current_cell,
-                target_cell,
-                use_heuristic=True,
-                nav_cost=nav_cost,
-            )
-            dijkstra_cells, dijkstra_exp, dijkstra_reached = self._run_search(
-                occupancy_grid,
-                cost_grid,
-                current_cell,
-                target_cell,
-                use_heuristic=False,
-                nav_cost=nav_cost,
-            )
-        elif navigation_mode == "RETURN_TO_BASE" or self.config.auto_frontier_route:
-            frontier_goal = self._select_frontier_goal_cell(
-                occupancy_grid, current_cell[1], min_row=current_cell[0]
-            )
-            nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
-            astar_cells, astar_exp, astar_reached = self._compute_route_for_mode(
-                occupancy_grid,
-                cost_grid,
-                base_cell,
-                current_cell,
-                frontier_goal,
-                navigation_mode,
-                use_heuristic=True,
-                nav_cost=nav_cost,
-            )
-            dijkstra_cells, dijkstra_exp, dijkstra_reached = self._compute_route_for_mode(
-                occupancy_grid,
-                cost_grid,
-                base_cell,
-                current_cell,
-                frontier_goal,
-                navigation_mode,
-                use_heuristic=False,
-                nav_cost=nav_cost,
-            )
+            mode_key: tuple = ("goal", target_cell)
         else:
-            astar_cells, astar_exp, astar_reached = [], 0, current_cell
-            dijkstra_cells, dijkstra_exp, dijkstra_reached = [], 0, current_cell
+            target_cell = None
+            mode_key = ("auto", navigation_mode, bool(self.config.auto_frontier_route))
+        cache_key = (mode_key, current_cell, mask_sig, rows, cols)
+        now = time.perf_counter()
+        cached = self._route_cache
+
+        if cached is not None and cached["key"] == cache_key:
+            astar_cells, astar_exp, astar_reached = cached["astar"]
+            dijkstra_cells, dijkstra_exp, dijkstra_reached = cached["dijkstra"]
+        elif (
+            cached is not None
+            and cached["mode_key"] == mode_key
+            and (now - cached["t"]) < self.REPLAN_MIN_INTERVAL_S
+            and self._path_still_valid(cached["astar"][0], blocked_mask)
+            and self._path_still_valid(cached["dijkstra"][0], blocked_mask)
+        ):
+            astar_cells, astar_exp, astar_reached = cached["astar"]
+            dijkstra_cells, dijkstra_exp, dijkstra_reached = cached["dijkstra"]
+        else:
+            if target_cell is not None:
+                nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
+                astar_cells, astar_exp, astar_reached = self._run_search(
+                    occupancy_grid, cost_grid, current_cell, target_cell,
+                    use_heuristic=True, nav_cost=nav_cost,
+                )
+                dijkstra_cells, dijkstra_exp, dijkstra_reached = self._run_search(
+                    occupancy_grid, cost_grid, current_cell, target_cell,
+                    use_heuristic=False, nav_cost=nav_cost,
+                )
+            elif navigation_mode == "RETURN_TO_BASE" or self.config.auto_frontier_route:
+                frontier_goal = self._select_frontier_goal_cell(
+                    occupancy_grid, current_cell[1], min_row=current_cell[0]
+                )
+                nav_cost = self._build_nav_cost(occupancy_grid, cost_grid)
+                astar_cells, astar_exp, astar_reached = self._compute_route_for_mode(
+                    occupancy_grid, cost_grid, base_cell, current_cell, frontier_goal,
+                    navigation_mode, use_heuristic=True, nav_cost=nav_cost,
+                )
+                dijkstra_cells, dijkstra_exp, dijkstra_reached = self._compute_route_for_mode(
+                    occupancy_grid, cost_grid, base_cell, current_cell, frontier_goal,
+                    navigation_mode, use_heuristic=False, nav_cost=nav_cost,
+                )
+            else:
+                astar_cells, astar_exp, astar_reached = [], 0, current_cell
+                dijkstra_cells, dijkstra_exp, dijkstra_reached = [], 0, current_cell
+            self._route_cache = {
+                "key": cache_key,
+                "mode_key": mode_key,
+                "t": now,
+                "astar": (astar_cells, astar_exp, astar_reached),
+                "dijkstra": (dijkstra_cells, dijkstra_exp, dijkstra_reached),
+            }
 
         if planner_name == "astar":
             path_cells = astar_cells
