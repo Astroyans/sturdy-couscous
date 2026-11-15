@@ -78,6 +78,13 @@ class TerrainNavigationPipeline:
     def clear_goal(self) -> None:
         self.target_goal_xy = None
 
+    def inject_external_quadrant(
+        self,
+        bounds: dict[str, float],
+        occ_subgrid: list[list[int]] | np.ndarray,
+    ) -> int:
+        return self.grid_builder.inject_external_quadrant(bounds, occ_subgrid)
+
     def reset_global_map(self) -> None:
         self.grid_builder.reset()
         self.visual_odometry.reset()

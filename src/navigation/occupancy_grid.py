@@ -88,6 +88,47 @@ class OccupancyGridBuilder:
         y_m = (row + 0.5) * res + self.y_min_m
         return float(x_m), float(y_m)
 
+    def inject_external_quadrant(
+        self,
+        bounds: dict[str, float],
+        occ_subgrid: list[list[int]] | np.ndarray,
+    ) -> int:
+        sub = np.asarray(occ_subgrid, dtype=np.uint8)
+        if sub.ndim != 2 or sub.size == 0:
+            return 0
+        rows, cols = self._log_odds.shape
+        res = self.config.grid_resolution_m
+        half_w = self.config.grid_width_m / 2.0
+        y_min = self.y_min_m
+
+        c0 = int(math.floor((float(bounds["x_min"]) + half_w) / res))
+        r0 = int(math.floor((float(bounds["y_min"]) - y_min) / res))
+        sh, sw = sub.shape
+        filled = 0
+        for dr in range(sh):
+            rr = r0 + dr
+            if not (0 <= rr < rows):
+                continue
+            for dc in range(sw):
+                cc = c0 + dc
+                if not (0 <= cc < cols):
+                    continue
+                val = int(sub[dr, dc])
+                if val == GRID_UNKNOWN or self._observed[rr, cc]:
+                    continue
+                self._observed[rr, cc] = True
+                if val in (GRID_BOULDER, GRID_CREVICE, GRID_STEEP):
+                    self._log_odds[rr, cc] = float(
+                        self.config.log_odds_occupied_threshold + 0.6
+                    )
+                    self._obstacle_type_layer[rr, cc] = (
+                        GRID_CREVICE if val == GRID_CREVICE else GRID_BOULDER
+                    )
+                else:
+                    self._log_odds[rr, cc] = float(self.config.log_odds_min * 0.5)
+                filled += 1
+        return filled
+
     def _local_to_world_xy(
         self,
         x_local: np.ndarray | float,

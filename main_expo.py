@@ -13,7 +13,13 @@ from src.camera.raspi3_receiver import Raspi3ReceiverCamera
 from src.camera.realsense_d415 import RealSenseD415Camera
 from src.camera.synthetic import SyntheticTerrainCamera
 from src.config import PipelineConfig
+from src.navigation.trajectory_predictor import (
+    extract_quadrant_patch,
+    format_esp32_ruta_txt,
+    predict_trajectory,
+)
 from src.pipeline import TerrainNavigationPipeline
+from src.transport.centro_mando_link import CentroMandoLink
 from src.transport.client import TelemetrySender
 from src.transport.media import build_expo_payload, build_map_state_payload
 from src.transport.server import ExpoLANServer, get_local_lan_ip
@@ -29,6 +35,12 @@ DASHBOARD_IP = "172.20.10.7"
 DASHBOARD_INGEST_PORT = 8766
 DASHBOARD_TRANSPORT = "http"
 DASHBOARD_URL = f"http://{DASHBOARD_IP}:{DASHBOARD_INGEST_PORT}/api/ingest"
+
+# IP y puertos UDP para RPi Centro de Mando (8767) y Dispositivo Astronauta (8769)
+CENTRO_MANDO_IP = ""
+CENTRO_MANDO_PORT = 8767
+ASTRONAUT_UDP_IP = ""
+ASTRONAUT_UDP_PORT = 8769
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -160,6 +172,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-local-cache",
         action="store_true",
         help="Desactivar respaldo local continuo en captures/latest_*.json/.npz.",
+    )
+    parser.add_argument(
+        "--centro-mando-ip",
+        default=CENTRO_MANDO_IP,
+        help="IP de la RPi Centro de mando (UDP 8767) para prediccion y cache.",
+    )
+    parser.add_argument(
+        "--centro-mando-port",
+        type=int,
+        default=CENTRO_MANDO_PORT,
+        help="Puerto UDP de la RPi Centro de mando (por defecto 8767).",
+    )
+    parser.add_argument(
+        "--astronaut-udp-ip",
+        default=ASTRONAUT_UDP_IP,
+        help="IP del dispositivo del astronauta para paquetes UDP ligeros (<1200 B).",
+    )
+    parser.add_argument(
+        "--astronaut-udp-port",
+        type=int,
+        default=ASTRONAUT_UDP_PORT,
+        help="Puerto UDP del dispositivo del astronauta (por defecto 8769).",
     )
     return parser.parse_args(argv)
 
@@ -384,6 +418,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sender.start()
+    centro_link = CentroMandoLink(
+        centro_mando_ip=args.centro_mando_ip,
+        centro_mando_port=args.centro_mando_port,
+        astronaut_udp_ip=args.astronaut_udp_ip,
+        astronaut_udp_port=args.astronaut_udp_port,
+    )
+    centro_link.start()
     cache_writer = None if args.no_local_cache else _AsyncCacheWriter()
     if cache_writer is not None:
         cache_writer.start()
@@ -398,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
             f"  -> HTTP Click Goal  : POST http://{lan_ip}:{lan_server.http_port}/api/goal"
         )
     frame_count = 0
+    last_cm_tx_ts = 0.0
 
     try:
         while True:
@@ -412,8 +454,54 @@ def main(argv: list[str] | None = None) -> int:
                 elif "x_m" in goal_cmd and "y_m" in goal_cmd:
                     pipeline.set_goal_world(goal_cmd["x_m"], goal_cmd["y_m"])
 
+            for ext_q in centro_link.pop_incoming_quadrants():
+                if isinstance(ext_q, dict) and "bounds" in ext_q and "occupancy_subgrid" in ext_q:
+                    pipeline.inject_external_quadrant(ext_q["bounds"], ext_q["occupancy_subgrid"])
+
             frame = camera.read_frame()
             output, b_mask, c_mask = pipeline.process_frame(frame)
+            prediction = predict_trajectory(output)
+            scan_req = centro_link.get_active_scan_request()
+            ruta_txt = format_esp32_ruta_txt(
+                mode=output.navigation.navigation_mode,
+                planner=output.navigation.planner_used,
+                safe_corridor=output.navigation.safe_corridor,
+                altitude_m=output.terrain.altitude_m,
+                heading_deg=output.navigation.recommended_heading_deg,
+                timestamp_ms=prediction.timestamp_ms,
+                waypoints_xy=output.navigation.path_world_xy,
+                scan_alert_id=scan_req.get("id") if scan_req else None,
+            )
+
+            now_cm = time.perf_counter()
+            if (now_cm - last_cm_tx_ts) >= 0.5:
+                last_cm_tx_ts = now_cm
+                scanned_patch = extract_quadrant_patch(
+                    occupancy_grid=output.navigation.occupancy_grid,
+                    cost_grid=output.navigation.cost_grid,
+                    bounds=prediction.current_bounds,
+                    resolution_m=config.grid_resolution_m,
+                    y_min_m=pipeline.grid_builder.y_min_m,
+                    grid_width_m=config.grid_width_m,
+                )
+                centro_link.send_to_centro_mando(
+                    prediction_dict=prediction.to_dict(),
+                    ruta_txt=ruta_txt,
+                    scanned_patch=scanned_patch,
+                )
+
+            centro_link.send_astronaut_udp(
+                mode=output.navigation.navigation_mode,
+                planner=output.navigation.planner_used,
+                safe_corridor=output.navigation.safe_corridor,
+                altitude_m=output.terrain.altitude_m,
+                heading_deg=output.navigation.recommended_heading_deg,
+                pose_xy=(output.rover_pose_xy_yaw[0], output.rover_pose_xy_yaw[1]),
+                prediction_dict=prediction.to_dict(),
+                waypoints_xy=output.navigation.path_world_xy,
+                scan_request=scan_req,
+            )
+
             payload = build_expo_payload(
                 output=output,
                 config=config,
@@ -424,6 +512,10 @@ def main(argv: list[str] | None = None) -> int:
                 jpeg_quality=args.jpeg_quality,
                 annotate_rgb=not args.raw_rgb,
             )
+            payload["data"]["trajectory_prediction"] = prediction.to_dict()
+            payload["data"]["centro_mando_link"] = centro_link.link_mode
+            if scan_req is not None:
+                payload["data"]["scan_request"] = scan_req
             map_state = build_map_state_payload(output=output, config=config)
 
             sender.enqueue(payload)
@@ -454,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
             lan_server.stop()
         if cache_writer is not None:
             cache_writer.stop()
+        centro_link.stop()
         sender.stop()
         camera.stop()
 
